@@ -148,7 +148,8 @@ final class CanvasViewController: NSViewController {
         t.startProcess(executable: exe, args: args, environment: spine.env(cardId: card.id),
                        currentDirectory: card.folder.path)
         card.terminal = t
-        card.containerView.setContent(TerminalHostView(terminal: t, padding: CanvasLayout.terminalPadding))
+        t.nativeBackgroundColor = Theme.colors.itemChrome  // match the inset gap → seamless padding
+        card.containerView.setContent(t)
         canvasLog("spawned \(card.id) in \(card.folder.path)")
     }
 

@@ -10,6 +10,10 @@ final class ItemContainerView: NSView {
     private let borderInset: CGFloat = 3
     private let titleBarHeight: CGFloat = 44
 
+    /// Breathing room between the window edges and the content (e.g. a card's
+    /// terminal). Default 0 — the diff object fills edge-to-edge.
+    var contentInset: CGFloat = 0 { didSet { needsLayout = true } }
+
     private let titleBar = DragBarView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let deleteButton = NSButton()
@@ -119,7 +123,8 @@ final class ItemContainerView: NSView {
         titleLabel.frame = NSRect(x: 14, y: (titleBarHeight - 28) / 2, width: tbw - 60, height: 28)
 
         let contentY = borderInset + titleBarHeight
-        content?.frame = NSRect(x: borderInset, y: contentY, width: w - 2 * borderInset, height: h - contentY - borderInset)
+        let area = NSRect(x: borderInset, y: contentY, width: w - 2 * borderInset, height: h - contentY - borderInset)
+        content?.frame = area.insetBy(dx: contentInset, dy: contentInset)
         placeholder.frame = NSRect(x: 8, y: contentY + (h - contentY) / 2 - 20, width: w - 16, height: 40)
     }
 }

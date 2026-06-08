@@ -21,6 +21,7 @@ final class Card: CanvasItem {
         self.folder = folder
         containerView = ItemContainerView(title: title)
         containerView.frame = frame
+        containerView.contentInset = CanvasLayout.terminalPadding   // breathing room for the CLI
         containerView.setPlaceholder("idle — double-click to start")
         containerView.setAccent(color: status.color, loud: status.isLoud)
     }
