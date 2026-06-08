@@ -65,7 +65,7 @@ final class Viewport {
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
             let raw = CGFloat(min(1.0, (CACurrentMediaTime() - start) / duration))
-            let t = Self.easeInOut(raw)
+            let t = Self.cubicBezier(0.22, 1, 0.36, 1, raw)   // design fly easing
             let m = m0 * pow(m1 / m0, t)
             let cx = c0.x + (c1.x - c0.x) * t
             let cy = c0.y + (c1.y - c0.y) * t
@@ -84,7 +84,8 @@ final class Viewport {
         guard vp.width > 0, vp.height > 0, rect.width > 0, rect.height > 0 else { return }
         let fit = min(vp.width / rect.width, vp.height / rect.height) * framingFill
         let m = max(scrollView.minMagnification, min(framingMaxMagnification, fit))
-        animateZoom(toCenter: NSPoint(x: rect.midX, y: rect.midY), mag: m, duration: 0.42, completion: completion)
+        animateZoom(toCenter: NSPoint(x: rect.midX, y: rect.midY), mag: m,
+                    duration: Theme.motion.flyTo, completion: completion)
     }
 
     /// Fit all content (capped at 1.0 so we never upscale-blur).
@@ -95,7 +96,7 @@ final class Viewport {
         m = max(scrollView.minMagnification, min(1.0, m))
         let c = NSPoint(x: contentBounds.midX, y: contentBounds.midY)
         if animated {
-            animateZoom(toCenter: c, mag: m, duration: 0.42)
+            animateZoom(toCenter: c, mag: m, duration: Theme.motion.fitAll)
         } else {
             flyTimer?.invalidate(); flyTimer = nil
             applyZoom(center: c, mag: m)
@@ -113,7 +114,20 @@ final class Viewport {
         }
     }
 
-    private static func easeInOut(_ t: CGFloat) -> CGFloat {
-        t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
+    /// Evaluate a CSS `cubic-bezier(x1,y1,x2,y2)` easing at time progress `x`
+    /// (P0=(0,0), P3=(1,1)). Bisection on x(t), then read y(t).
+    private static func cubicBezier(_ x1: CGFloat, _ y1: CGFloat, _ x2: CGFloat, _ y2: CGFloat, _ x: CGFloat) -> CGFloat {
+        func bez(_ a: CGFloat, _ b: CGFloat, _ t: CGFloat) -> CGFloat {
+            let mt = 1 - t
+            return 3 * mt * mt * t * a + 3 * mt * t * t * b + t * t * t
+        }
+        var lo: CGFloat = 0, hi: CGFloat = 1, t = x
+        for _ in 0..<20 {
+            t = (lo + hi) / 2
+            let xe = bez(x1, x2, t)
+            if abs(xe - x) < 1e-4 { break }
+            if xe < x { lo = t } else { hi = t }
+        }
+        return bez(y1, y2, t)
     }
 }

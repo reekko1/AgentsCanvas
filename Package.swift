@@ -10,7 +10,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "AgentCanvas",
-            dependencies: ["SwiftTerm"]
+            dependencies: ["SwiftTerm"],
+            resources: [
+                .copy("Resources/Fonts")
+            ]
         )
     ]
 )

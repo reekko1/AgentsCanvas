@@ -17,4 +17,15 @@ enum CardStatus {
 
     /// Only blocked/error pull the eye — "calm by default, loud only when it matters" (PRD §3.5).
     var isLoud: Bool { self == .blocked || self == .error }
+
+    /// Lowercase display word for the title-bar status label.
+    var word: String {
+        switch self {
+        case .idle:    return "idle"
+        case .running: return "running"
+        case .blocked: return "blocked"
+        case .done:    return "done"
+        case .error:   return "error"
+        }
+    }
 }

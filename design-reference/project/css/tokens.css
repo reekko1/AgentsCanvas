@@ -1,0 +1,154 @@
+/* ============================================================
+   AGENT CANVAS — DESIGN TOKENS
+   Lo-fi dusk studio. Calm by default, loud when it matters.
+   Every role defined for both light (.t-light) and dark (.t-dark).
+   ============================================================ */
+
+:root {
+  /* ---- Type ---- */
+  --font-ui: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  /* ---- Type scale (px) ---- */
+  --t-display: 64px;   /* doc hero          */
+  --t-h1: 30px;        /* section title     */
+  --t-h2: 19px;        /* subsection        */
+  --t-title: 15px;     /* item title/name   */
+  --t-label: 12.5px;   /* terminal labels   */
+  --t-path: 13px;      /* file paths        */
+  --t-meta: 11px;      /* line counts/badges*/
+  --t-diff: 12.5px;    /* unified-diff body */
+  --t-hint: 14px;      /* empty/hint text   */
+
+  /* ---- Geometry (px) ---- */
+  --card-w: 360;  --card-h: 240;     /* on-canvas card  (3:2 landscape) */
+  --diff-w: 424;  --diff-h: 540;     /* on-canvas diff object (portrait)*/
+  --r-item: 16px;       /* item corner radius      */
+  --r-inner: 9px;       /* terminal / panel inner  */
+  --r-ctrl: 9px;        /* buttons / fields        */
+  --r-pill: 999px;
+  --stroke: 1px;        /* hairline                */
+  --stroke-emph: 1.5px; /* status emphasis         */
+  --pad-bar: 13px;      /* title/handle padding    */
+  --pad-body: 16px;     /* content padding         */
+  --row-h: 34px;        /* list row height         */
+  --ctrl-h: 28px;       /* icon button size        */
+  --commit-h: 38px;     /* commit button height    */
+
+  /* ---- Motion ---- */
+  --ease-fly: cubic-bezier(0.22, 1, 0.36, 1);   /* camera fly-to     */
+  --ease-soft: cubic-bezier(0.4, 0, 0.2, 1);    /* status / ui       */
+  --dur-flyto: 640ms;   /* zoom into an item       */
+  --dur-fit: 760ms;     /* zoom out to fit all     */
+  --dur-status: 300ms;  /* status colour cross-fade*/
+  --dur-flare: 440ms;   /* loud-state entry flare  */
+}
+
+/* ============================================================
+   DARK — cozy night studio (the hero mode)
+   ============================================================ */
+.t-dark {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --canvas:        oklch(0.185 0.024 295);
+  --canvas-warm:   oklch(0.225 0.034 330);   /* vignette centre glow */
+  --item-body:     oklch(0.245 0.022 290);
+  --item-bar:      oklch(0.285 0.026 290);
+  --terminal-bg:   oklch(0.155 0.020 288);
+  --diff-surface:  oklch(0.205 0.020 290);
+  --filelist-bg:   oklch(0.235 0.020 290);
+
+  /* Text */
+  --text:        oklch(0.935 0.015 85);
+  --text-muted:  oklch(0.66 0.022 290);
+  --glyph:       oklch(0.80 0.020 290);
+
+  /* Lines / states */
+  --border:      oklch(0.345 0.022 290);
+  --border-soft: oklch(0.30 0.020 290);
+  --hover:       oklch(0.31 0.026 290);
+  --sel:         oklch(0.34 0.045 285);
+
+  /* Agent status (cool+quiet calm / warm+bright loud) */
+  --st-idle:     oklch(0.60 0.028 290);
+  --st-running:  oklch(0.74 0.105 196);
+  --st-done:     oklch(0.78 0.115 156);
+  --st-blocked:  oklch(0.82 0.155 78);
+  --st-error:    oklch(0.64 0.215 22);
+
+  /* Diff syntax */
+  --diff-add:    oklch(0.78 0.13 152);
+  --diff-add-bg: oklch(0.40 0.07 152 / 0.22);
+  --diff-del:    oklch(0.70 0.16 24);
+  --diff-del-bg: oklch(0.42 0.10 24 / 0.22);
+  --diff-hunk:   oklch(0.72 0.085 272);
+  --diff-meta:   oklch(0.58 0.02 290);
+  --diff-ctx:    oklch(0.70 0.018 290);
+
+  /* File change types */
+  --ft-added:    oklch(0.78 0.13 152);
+  --ft-modified: oklch(0.82 0.135 80);
+  --ft-deleted:  oklch(0.68 0.18 24);
+  --ft-renamed:  oklch(0.72 0.10 275);
+  --ft-untracked:oklch(0.62 0.025 290);
+
+  /* Accents / controls */
+  --primary:     oklch(0.70 0.13 282);
+  --primary-ink: oklch(0.16 0.02 285);
+  --primary-dis: oklch(0.40 0.03 285);
+  --pill-bg:     oklch(0.32 0.03 285);
+  --shadow:      0 18px 40px -16px oklch(0.10 0.02 290 / 0.75),
+                 0 2px 8px -2px oklch(0.10 0.02 290 / 0.6);
+}
+
+/* ============================================================
+   LIGHT — warm paper daylight (terminals stay dark: cozy screens)
+   ============================================================ */
+.t-light {
+  color-scheme: light;
+
+  --canvas:        oklch(0.935 0.014 82);
+  --canvas-warm:   oklch(0.965 0.022 70);
+  --item-body:     oklch(0.985 0.006 82);
+  --item-bar:      oklch(0.955 0.013 82);
+  --terminal-bg:   oklch(0.205 0.022 288);   /* stays dark, glowing */
+  --diff-surface:  oklch(0.985 0.006 82);
+  --filelist-bg:   oklch(0.955 0.011 82);
+
+  --text:        oklch(0.30 0.022 290);
+  --text-muted:  oklch(0.52 0.022 290);
+  --glyph:       oklch(0.44 0.022 290);
+
+  --border:      oklch(0.865 0.013 82);
+  --border-soft: oklch(0.90 0.012 82);
+  --hover:       oklch(0.915 0.014 82);
+  --sel:         oklch(0.90 0.035 285);
+
+  --st-idle:     oklch(0.66 0.026 290);
+  --st-running:  oklch(0.64 0.115 200);
+  --st-done:     oklch(0.62 0.125 158);
+  --st-blocked:  oklch(0.72 0.165 70);
+  --st-error:    oklch(0.58 0.215 24);
+
+  --diff-add:    oklch(0.52 0.13 152);
+  --diff-add-bg: oklch(0.86 0.09 152 / 0.55);
+  --diff-del:    oklch(0.55 0.17 24);
+  --diff-del-bg: oklch(0.88 0.10 24 / 0.55);
+  --diff-hunk:   oklch(0.55 0.10 272);
+  --diff-meta:   oklch(0.60 0.02 290);
+  --diff-ctx:    oklch(0.45 0.018 290);
+
+  --ft-added:    oklch(0.52 0.13 152);
+  --ft-modified: oklch(0.60 0.14 75);
+  --ft-deleted:  oklch(0.55 0.18 24);
+  --ft-renamed:  oklch(0.54 0.12 275);
+  --ft-untracked:oklch(0.58 0.025 290);
+
+  --primary:     oklch(0.56 0.15 282);
+  --primary-ink: oklch(0.99 0.005 285);
+  --primary-dis: oklch(0.84 0.02 285);
+  --pill-bg:     oklch(0.91 0.02 285);
+  --shadow:      0 16px 34px -18px oklch(0.50 0.04 290 / 0.40),
+                 0 2px 6px -2px oklch(0.50 0.04 290 / 0.28);
+}

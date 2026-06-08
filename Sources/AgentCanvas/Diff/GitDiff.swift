@@ -23,6 +23,17 @@ enum GitFileStatus {
         }
     }
 
+    /// Full word for the diff-header chip.
+    var name: String {
+        switch self {
+        case .added:     return "added"
+        case .modified:  return "modified"
+        case .deleted:   return "deleted"
+        case .renamed:   return "renamed"
+        case .untracked: return "untracked"
+        }
+    }
+
     /// Map a porcelain status char (one column of `XY`) to a status; `nil` for a
     /// blank column (no change on that side).
     init?(code: Character) {

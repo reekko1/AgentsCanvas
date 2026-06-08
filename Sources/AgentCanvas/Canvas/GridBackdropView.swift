@@ -25,6 +25,14 @@ final class GridBackdropView: NSView {
         Theme.colors.canvasBackground.setFill()
         bounds.fill()
 
+        // Warm dusk vignette — a soft glow off-centre, fading to the canvas color.
+        let warm = Theme.colors.canvasWarm
+        if let g = NSGradient(starting: warm, ending: warm.withAlphaComponent(0)) {
+            let center = NSPoint(x: bounds.width * 0.62, y: bounds.height * 0.18) // 18% from top (flipped)
+            let radius = max(bounds.width, bounds.height) * 0.95
+            g.draw(fromCenter: center, radius: 0, toCenter: center, radius: radius, options: [])
+        }
+
         let spacing = baseSpacing * scale
         guard spacing >= 5 else { return } // too dense when far out — just dark, no moiré
 

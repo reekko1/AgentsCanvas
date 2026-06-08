@@ -4,6 +4,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Fonts.registerBundledFonts()   // before any view reads Theme.fonts
+
         let rect = NSRect(x: 0, y: 0, width: 1400, height: 900)
         window = NSWindow(
             contentRect: rect,

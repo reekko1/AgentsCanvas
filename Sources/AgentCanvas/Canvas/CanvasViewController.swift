@@ -9,12 +9,18 @@ final class CanvasViewController: NSViewController {
     private var scrollView: NSScrollView!
     private var documentView: DocumentView!
     private var backdrop: GridBackdropView!
-    private var hintLabel: NSTextField!
+    private var emptyView: EmptyStateView!
 
     private var viewport: Viewport!
     private let store = ItemStore()
     private let spine = Spine()
-    private let toolbar = CanvasToolbar()
+
+    // Window-edge overlays (constant-size chrome, not on the magnified canvas).
+    private var zoomHUD: ZoomHUD!
+    private var toolDock: ToolDock!
+    private var notifPanel: NotificationPanel!
+    private let feed = ActivityFeed()
+    private var frames: [Frame] = []
 
     private var savedViewport: (center: NSPoint, mag: CGFloat)?
     private var keyMonitor: Any?
@@ -27,9 +33,24 @@ final class CanvasViewController: NSViewController {
 
         buildViewTree()
         viewport = Viewport(scrollView: scrollView)
-        viewport.onChange = { [weak self] in self?.updateBackdrop() }
+        viewport.onChange = { [weak self] in
+            guard let self else { return }
+            self.updateBackdrop()
+            self.updateItemDetail()
+            self.zoomHUD?.setLevel(self.scrollView.magnification)
+        }
+        buildOverlays()
 
-        spine.onStatus = { [weak self] cardId, status in self?.store.card(cardId)?.apply(status) }
+        spine.onStatus = { [weak self] cardId, status in
+            guard let self, let card = self.store.card(cardId) else { return }
+            let changed = card.status != status
+            card.apply(status)
+            if changed {
+                self.feed.record(id: cardId, name: card.title, status: status, date: Date())
+                self.refreshActivity()
+                self.refreshFrames()   // a member going loud lights the frame's "needs you" tag
+            }
+        }
         spine.start()
 
         loadWorkspace()
@@ -38,7 +59,7 @@ final class CanvasViewController: NSViewController {
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        installToolbar()
+        configureWindowChrome()
         viewport.updateLimits(contentBounds: store.bounds)
         if let v = savedViewport {
             let m = max(scrollView.minMagnification, min(scrollView.maxMagnification, v.mag))
@@ -47,13 +68,15 @@ final class CanvasViewController: NSViewController {
             viewport.fitAll(contentBounds: store.bounds, animated: false)
         }
         updateBackdrop()
+        updateItemDetail()
+        zoomHUD.setLevel(scrollView.magnification)
+        refreshActivity()
         updateHintVisibility()
     }
 
     override func viewDidLayout() {
         super.viewDidLayout()
         viewport.updateLimits(contentBounds: store.bounds)
-        positionHint()
     }
 
     deinit {
@@ -82,35 +105,85 @@ final class CanvasViewController: NSViewController {
         scrollView.documentView = documentView
         view.addSubview(scrollView)
 
-        hintLabel = NSTextField(labelWithString: "Press  N  to add an agent")
-        hintLabel.font = Theme.fonts.hint
-        hintLabel.textColor = Theme.colors.textMuted
-        hintLabel.alignment = .center
-        view.addSubview(hintLabel)
-        positionHint()
+        emptyView = EmptyStateView()
+        emptyView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(emptyView)
+        NSLayoutConstraint.activate([
+            emptyView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            emptyView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+        ])
     }
 
-    private func positionHint() {
-        guard hintLabel != nil else { return }
-        hintLabel.sizeToFit()
-        hintLabel.frame.origin = NSPoint(x: (view.bounds.width - hintLabel.frame.width) / 2,
-                                         y: (view.bounds.height - hintLabel.frame.height) / 2)
+    private func updateHintVisibility() { emptyView?.isHidden = !(store.items.isEmpty && frames.isEmpty) }
+
+    /// Create the constant-size window-edge overlays and wire them to the engine.
+    private func buildOverlays() {
+        zoomHUD = ZoomHUD()
+        zoomHUD.onZoomIn = { [weak self] in self?.viewport.zoomBy(1.25) }
+        zoomHUD.onZoomOut = { [weak self] in self?.viewport.zoomBy(0.8) }
+        zoomHUD.onFit = { [weak self] in
+            guard let self else { return }
+            self.viewport.fitAll(contentBounds: self.store.bounds, animated: true)
+        }
+        view.addSubview(zoomHUD)
+
+        toolDock = ToolDock()
+        toolDock.onFrame = { [weak self] in self?.createFrame() }
+        toolDock.onAgent = { [weak self] in self?.createCard() }
+        toolDock.onTerminal = { [weak self] in self?.createShell() }
+        toolDock.onDiff = { [weak self] in self?.createDiff() }
+        view.addSubview(toolDock)
+
+        notifPanel = NotificationPanel()
+        notifPanel.onSelect = { [weak self] id in self?.flyToItem(id: id) }
+        view.addSubview(notifPanel)
+
+        NSLayoutConstraint.activate([
+            zoomHUD.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
+            zoomHUD.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -14),
+
+            toolDock.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
+            toolDock.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+
+            notifPanel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
+            notifPanel.topAnchor.constraint(equalTo: view.topAnchor, constant: 38), // clear the title bar
+        ])
     }
 
-    private func updateHintVisibility() { hintLabel?.isHidden = !store.items.isEmpty }
+    /// A chromeless, transparent title bar so the canvas bleeds to the top edge
+    /// (the dock replaces the old create-action toolbar). Traffic lights stay.
+    private func configureWindowChrome() {
+        guard let window = view.window else { return }
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.styleMask.insert(.fullSizeContentView)
+    }
 
-    private func installToolbar() {
-        guard let window = view.window, window.toolbar == nil else { return }
-        toolbar.onNewCard = { [weak self] in self?.createCard() }
-        toolbar.onNewDiff = { [weak self] in self?.createDiff() }
-        window.toolbar = toolbar.make()
-        window.toolbarStyle = .unified
+    /// Rebuild the activity center from the feed, with the live "needs you" count.
+    private func refreshActivity() {
+        guard notifPanel != nil else { return }
+        let loud = store.items.compactMap { $0 as? Card }.filter { $0.status.isLoud }.count
+        notifPanel.reload(feed, loudCount: loud)
+    }
+
+    /// Fly the camera to an item by id (from an activity row).
+    private func flyToItem(id: String) {
+        if let item = store.items.first(where: { $0.id == id }) { frame(item) }
     }
 
     private func updateBackdrop() {
         guard backdrop != nil else { return }
         backdrop.offset = scrollView.contentView.bounds.origin
         backdrop.scale = scrollView.magnification
+    }
+
+    /// Diff objects swap to their full two-pane tool once big enough on screen,
+    /// and to a compact file list when far (the decided LOD for diffs).
+    private func updateItemDetail() {
+        let mag = scrollView.magnification
+        for case let diff as DiffObject in store.items {
+            diff.setDetail(full: diff.frame.width * mag >= 520)
+        }
     }
 
     // MARK: Items
@@ -120,6 +193,7 @@ final class CanvasViewController: NSViewController {
             guard let self, let item else { return }
             item.frame.origin = origin
             self.viewport.updateLimits(contentBounds: self.store.bounds)
+            self.refreshFrames()   // a card moving in/out of a frame changes membership
             self.saveWorkspace()
         }
         item.containerView.onDelete = { [weak self, weak item] in
@@ -144,11 +218,21 @@ final class CanvasViewController: NSViewController {
     private func spawnTerminal(_ card: Card) {
         guard card.terminal == nil else { return }
         let t = LocalProcessTerminalView(frame: .zero)
-        let (exe, args) = spine.launchCommand(folder: card.folder)
-        t.startProcess(executable: exe, args: args, environment: spine.env(cardId: card.id),
-                       currentDirectory: card.folder.path)
+        switch card.role {
+        case .agent:
+            let (exe, args) = spine.launchCommand(folder: card.folder)
+            t.startProcess(executable: exe, args: args, environment: spine.env(cardId: card.id),
+                           currentDirectory: card.folder.path)
+        case .shell:
+            let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+            t.startProcess(executable: shell, args: ["-l"], environment: spine.plainEnv(),
+                           currentDirectory: card.folder.path)
+        }
         card.terminal = t
-        t.nativeBackgroundColor = Theme.colors.itemChrome  // match the inset gap → seamless padding
+        // The glowing dark screen: terminal bg matches the bezel (the inset gap) so
+        // padding is seamless, with a warm-ish light foreground.
+        t.nativeBackgroundColor = Theme.colors.terminalBg
+        t.nativeForegroundColor = Theme.colors.termText
         card.containerView.setContent(t)
         canvasLog("spawned \(card.id) in \(card.folder.path)")
     }
@@ -159,6 +243,7 @@ final class CanvasViewController: NSViewController {
         item.containerView.removeFromSuperview()
         store.remove(item)
         viewport.updateLimits(contentBounds: store.bounds)
+        refreshFrames()
         updateHintVisibility()
         saveWorkspace()
         canvasLog("deleted \(item.id)")
@@ -174,10 +259,11 @@ final class CanvasViewController: NSViewController {
         for record in ws.items {
             let frameRect = NSRect(x: record.x, y: record.y, width: record.w, height: record.h)
             switch record.kind {
-            case "card":
+            case "card", "shell":
                 guard let folder = record.folder else { continue }
                 let card = Card(id: record.id, title: record.title, frame: frameRect,
-                                folder: URL(fileURLWithPath: folder))
+                                folder: URL(fileURLWithPath: folder),
+                                role: record.kind == "shell" ? .shell : .agent)
                 store.add(card)
                 installItemView(card)
             case "diff":
@@ -186,18 +272,25 @@ final class CanvasViewController: NSViewController {
                 store.add(diff)
                 installItemView(diff)
                 diff.start()
+            case "frame":
+                let frame = Frame(id: record.id, name: record.title, rect: frameRect)
+                frames.append(frame)
+                installFrame(frame)
             default:
                 canvasLog("skipping unknown item kind: \(record.kind)")
             }
         }
         if let v = ws.viewport { savedViewport = (NSPoint(x: v.cx, y: v.cy), CGFloat(v.mag)) }
-        canvasLog("restored \(store.items.count) item(s)")
+        refreshFrames()   // members exist now → fill counts + needs-you tags
+        canvasLog("restored \(store.items.count) item(s), \(frames.count) frame(s)")
     }
 
     func saveWorkspace() {
         guard viewport != nil else { return }
         let vp = Workspace.Viewport(cx: viewport.center.x, cy: viewport.center.y, mag: viewport.magnification)
-        store.workspace(viewport: vp).save()
+        var ws = store.workspace(viewport: vp)
+        ws.items += frames.map { $0.record() }   // frames share the id sequence, persisted alongside items
+        ws.save()
     }
 
     // MARK: Input
@@ -281,15 +374,30 @@ final class CanvasViewController: NSViewController {
                       width: size.width, height: size.height)
     }
 
-    private func addCard(folder: URL) {
-        let card = Card(id: store.nextId(prefix: "card"), title: folder.lastPathComponent,
-                        frame: centeredFrame(CanvasLayout.cardSize), folder: folder)
+    private func createShell() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Open as Terminal"
+        panel.message = "Pick a folder to open a plain shell in."
+        panel.begin { [weak self] resp in
+            guard let self, resp == .OK, let url = panel.url else { return }
+            self.addCard(folder: url, role: .shell)
+        }
+    }
+
+    private func addCard(folder: URL, role: CardRole = .agent) {
+        let card = Card(id: store.nextId(prefix: role == .shell ? "shell" : "card"),
+                        title: folder.lastPathComponent,
+                        frame: centeredFrame(CanvasLayout.cardSize), folder: folder, role: role)
         store.add(card)
         installItemView(card)
         viewport.updateLimits(contentBounds: store.bounds)
+        refreshFrames()
         updateHintVisibility()
         saveWorkspace()
-        canvasLog("added \(card.id) -> \(folder.path)")
+        canvasLog("added \(card.id) [\(role)] -> \(folder.path)")
         frame(card)
     }
 
@@ -304,5 +412,75 @@ final class CanvasViewController: NSViewController {
         saveWorkspace()
         canvasLog("added \(diff.id) -> \(folder.path)")
         frame(diff)
+    }
+
+    // MARK: Frames
+    private func createFrame() {
+        promptFrameName { [weak self] name in
+            guard let self, let name else { return }
+            let f = Frame(id: self.store.nextId(prefix: "frame"), name: name,
+                          rect: self.centeredFrame(CanvasLayout.frameSize))
+            self.frames.append(f)
+            self.installFrame(f)
+            self.refreshFrames()
+            self.updateHintVisibility()
+            self.saveWorkspace()
+            self.viewport.frame(rect: f.rect, completion: nil)
+        }
+    }
+
+    /// Place a frame's view behind the items and wire its label (fit / move / delete).
+    private func installFrame(_ f: Frame) {
+        f.view.label.onClick = { [weak self, weak f] in
+            guard let self, let f else { return }
+            self.viewport.frame(rect: f.rect, completion: nil)   // fit the camera to the group
+        }
+        f.view.label.onMovedEnd = { [weak self, weak f] origin in
+            guard let self, let f else { return }
+            f.rect.origin = origin
+            self.refreshFrames()
+            self.saveWorkspace()
+        }
+        f.view.label.onDelete = { [weak self, weak f] in
+            if let f { self?.deleteFrame(f) }
+        }
+        documentView.addSubview(f.view, positioned: .below, relativeTo: nil)  // always behind cards/diffs
+    }
+
+    private func deleteFrame(_ f: Frame) {
+        f.view.removeFromSuperview()
+        frames.removeAll { $0 === f }
+        updateHintVisibility()
+        saveWorkspace()
+        canvasLog("deleted frame \(f.id)")
+    }
+
+    /// Recompute each frame's member count + "needs you" tag from geometry + status.
+    private func refreshFrames() {
+        guard !frames.isEmpty else { return }
+        let cards = store.items.compactMap { $0 as? Card }
+        for f in frames {
+            let members = f.members(in: cards)
+            let loud = members.first { $0.status == .blocked }?.status.color
+                    ?? members.first { $0.status == .error }?.status.color
+            f.view.update(count: members.count, loud: loud)
+        }
+    }
+
+    private func promptFrameName(_ completion: @escaping (String?) -> Void) {
+        guard let window = view.window else { completion(nil); return }
+        let alert = NSAlert()
+        alert.messageText = "New frame"
+        alert.informativeText = "Name this group of agents."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.placeholderString = "e.g. checkout"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { resp in
+            let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            completion(resp == .alertFirstButtonReturn && !name.isEmpty ? name : nil)
+        }
     }
 }

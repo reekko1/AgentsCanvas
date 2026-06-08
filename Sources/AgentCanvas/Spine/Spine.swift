@@ -37,12 +37,22 @@ final class Spine {
         }
     }
 
-    /// Environment for a spawned session: the app's env + correlation stamps.
+    /// Environment for a spawned agent session: the app's env + correlation stamps.
     func env(cardId: String) -> [String] {
         var env = ProcessInfo.processInfo.environment
         env["CANVAS_CARD_ID"] = cardId
         env["CANVAS_PORT"] = String(sink.port)
         env["TERM"] = "xterm-256color"
+        return env.map { "\($0.key)=\($0.value)" }
+    }
+
+    /// Environment for a plain shell card: the app's env, no correlation stamps
+    /// (a shell isn't watched — no hooks, no status).
+    func plainEnv() -> [String] {
+        var env = ProcessInfo.processInfo.environment
+        env["TERM"] = "xterm-256color"
+        env.removeValue(forKey: "CANVAS_CARD_ID")
+        env.removeValue(forKey: "CANVAS_PORT")
         return env.map { "\($0.key)=\($0.value)" }
     }
 

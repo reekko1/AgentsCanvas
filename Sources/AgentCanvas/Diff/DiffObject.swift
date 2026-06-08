@@ -16,7 +16,12 @@ final class DiffObject: CanvasItem {
 
     private let name: String
     private let diffView: DiffContentView
+    private let compactView = DiffCompactView()
     private let watcher: DiffWatcher
+
+    /// LOD: the full two-pane tool when focused, a compact file list when far.
+    private var showingFull = true
+    private var lastSnapshot: GitSnapshot = .clean
 
     init(id: String, frame: NSRect, folder: URL) {
         self.id = id
@@ -25,27 +30,57 @@ final class DiffObject: CanvasItem {
         self.name = folder.lastPathComponent
         containerView = ItemContainerView(title: name)
         containerView.frame = frame
+        containerView.bodyColor = Theme.colors.diffSurface
         diffView = DiffContentView(folder: folder)
         watcher = DiffWatcher(folder: folder)
         containerView.setContent(diffView)
-        // Calm, neutral accent — status colors belong to agent cards, not diffs.
-        containerView.setAccent(color: Theme.colors.neutralBorder, loud: false)
+        // Calm, neutral accent + no bead — status colors belong to agent cards, not diffs.
+        containerView.setBead(visible: false)
+        containerView.setAccent(color: Theme.colors.neutralBorder, glow: .none)
 
         watcher.onChange = { [weak self] snapshot in
-            self?.diffView.apply(snapshot)
-            self?.containerView.setTitle(self?.titleText(for: snapshot) ?? "")
+            guard let self else { return }
+            self.lastSnapshot = snapshot
+            if self.showingFull { self.diffView.apply(snapshot) } else { self.compactView.apply(snapshot) }
+            self.containerView.setTrailing(self.diffstat(for: snapshot))
         }
         diffView.onMutated = { [weak self] in self?.watcher.poke() }  // refresh right after a git action
+    }
+
+    /// Swap between the full tool (focused) and the compact list (far). Driven by
+    /// the controller from the current magnification × this item's on-canvas size.
+    func setDetail(full: Bool) {
+        guard full != showingFull else { return }
+        showingFull = full
+        if full {
+            containerView.setContent(diffView)
+            diffView.apply(lastSnapshot)
+        } else {
+            containerView.setContent(compactView)
+            compactView.apply(lastSnapshot)
+        }
     }
 
     func start() { watcher.start() }
     func stop() { watcher.stop() }
 
-    private func titleText(for snapshot: GitSnapshot) -> String {
-        guard snapshot.isRepo else { return "\(name)  —  not a git repo" }
-        guard !snapshot.changes.isEmpty else { return "\(name)  ✓ clean" }
-        let files = snapshot.changes.count
-        return "\(name)   \(files) file\(files == 1 ? "" : "s")  +\(snapshot.totalAdded) −\(snapshot.totalRemoved)"
+    /// The trailing diffstat shown in the title bar (an at-distance cue).
+    private func diffstat(for s: GitSnapshot) -> NSAttributedString {
+        let font = Theme.fonts.listStat
+        guard s.isRepo else {
+            return NSAttributedString(string: "not a repo",
+                                      attributes: [.foregroundColor: Theme.colors.textMuted, .font: font])
+        }
+        guard !s.changes.isEmpty else {
+            return NSAttributedString(string: "✓ clean",
+                                      attributes: [.foregroundColor: Theme.colors.statusDone, .font: font])
+        }
+        let r = NSMutableAttributedString()
+        r.append(NSAttributedString(string: "+\(s.totalAdded)",
+                                    attributes: [.foregroundColor: Theme.colors.diffAdded, .font: font]))
+        r.append(NSAttributedString(string: "  −\(s.totalRemoved)",
+                                    attributes: [.foregroundColor: Theme.colors.diffRemoved, .font: font]))
+        return r
     }
 
     func record() -> Workspace.Item {

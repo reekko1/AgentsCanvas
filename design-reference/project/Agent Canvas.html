@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Canvas — Design</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/panels.css">
+</head>
+<body class="doc dark">
+
+<!-- ===================== TOPBAR ===================== -->
+<header class="topbar">
+  <div class="brand"><span class="glyph"></span>Agent&nbsp;Canvas</div>
+  <nav class="topnav">
+    <a href="#god">God-view</a>
+    <a href="#frames-sec">Frames</a>
+    <a href="#states">States</a>
+    <a href="#focus">Focus</a>
+    <a href="#diff">Diff tool</a>
+    <a href="#notify">Notifications</a>
+    <a href="#empty">First run</a>
+    <a href="#tokens">Tokens</a>
+    <a href="#motion">Motion</a>
+  </nav>
+  <div class="topright">
+    <div class="theme-toggle" role="group" aria-label="Theme">
+      <button data-mode="light" aria-pressed="false">☀ Light</button>
+      <button data-mode="dark" aria-pressed="true">☾ Dark</button>
+    </div>
+  </div>
+</header>
+
+<!-- ===================== HERO HEAD ===================== -->
+<div class="wrap hero-head">
+  <div class="kicker">A telescope, not a cockpit · Lo-fi dusk studio</div>
+  <h1 class="display">See every agent at once.<br><span class="soft">Know instantly which one needs you.</span></h1>
+  <p class="lede">An infinite, zoomable canvas where each card is a live coding-agent terminal. <b>Calm by default, loud only when it matters.</b> Drag the surface, scroll to zoom, double-click a card to fly into it — and let the one that’s <b>blocked</b> pull your eye across the room.</p>
+</div>
+
+<!-- ===================== GOD-VIEW (hero) ===================== -->
+<section class="block" id="god" style="padding-top:14px">
+  <div class="wrap">
+    <div class="mac t-dark" id="heroWindow" data-follow-theme>
+      <div class="mac-bar">
+        <div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+        <div class="mac-title">Agent Canvas — 7 agents · 2 diffs · 3 frames</div>
+      </div>
+      <div class="viewport" id="viewport">
+        <div class="surface" id="surface"><div class="dotfield"></div></div>
+
+        <div class="canvas-hint">drag to pan · scroll to zoom · click a frame label to fit a group</div>
+
+        <!-- floating tool dock (Photoshop-style, left edge) -->
+        <div class="tooldock" id="tooldock" role="toolbar" aria-label="Canvas tools">
+          <button class="tool active" data-tool="frame" data-tip="Frame" aria-label="Frame tool">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3.2 3.2" stroke-linecap="round"><rect x="4" y="4" width="16" height="16" rx="2.5"/></svg>
+          </button>
+          <button class="tool" data-tool="agent" data-tip="Agent" aria-label="Agent tool">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg>
+          </button>
+          <button class="tool" data-tool="terminal" data-tip="Terminal" aria-label="Terminal tool">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M7.5 10l2.8 2.4-2.8 2.4M13 15h3.5"/></svg>
+          </button>
+          <button class="tool" data-tool="diff" data-tip="Diff" aria-label="Diff tool">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 4.5v6M9 7.5h6M9 16.5h6"/></svg>
+          </button>
+        </div>
+
+        <!-- notification center (constant-size overlay chrome) -->
+        <aside class="notif" id="notif">
+          <div class="notif-head" id="notifHead">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+            <span class="t">Activity</span>
+            <span class="count">2</span>
+            <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+          </div>
+          <div class="notif-list" id="notifList"></div>
+          <div class="notif-foot"><span>Newest first</span><a>Mark all read</a></div>
+        </aside>
+
+        <!-- zoom HUD -->
+        <div class="zoom-hud">
+          <button id="zOut" title="Zoom out">−</button>
+          <span class="lvl" id="zoomLvl">100%</span>
+          <button id="zIn" title="Zoom in">+</button>
+          <button id="zFit" title="Fit all"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"/></svg></button>
+        </div>
+      </div>
+    </div>
+    <p class="lede" style="margin-top:18px;font-size:15px">Status is expressed as a <b>soft glow halo + a bead</b> — a big, scalable shape that still reads when a card is shrunk to a thumbnail. The two loud states (<b>blocked</b> amber, <b>error</b> red) flood the canvas with light; the three calm states (idle, running, done) stay quiet and never compete. Click any row in <b>Activity</b> to fly the camera straight to that agent.</p>
+  </div>
+</section>
+
+<!-- ===================== FRAMES ===================== -->
+<section class="block" id="frames-sec">
+  <div class="wrap">
+    <div class="kicker">3.4 · Grouping · work concerns</div>
+    <h1 class="sec">Frames</h1>
+    <p class="lede" style="margin-bottom:30px">A frame is a labeled square drawn <b>behind</b> a cluster of cards — a calm boundary that says “these agents belong to one concern.” It’s pure spatial structure: drop the cards for one feature, repo, or workstream inside, name it, and the canvas reads as rooms instead of a wall of windows. Frames stay <b>quiet</b> — a dashed hairline and a small label — so the loud agent glows still own your attention. Click a frame’s label to fly the camera and fit just that group.</p>
+
+    <div class="two-col" style="grid-template-columns:1.15fr 0.85fr;align-items:start;gap:34px">
+      <div class="t-dark" style="background:radial-gradient(120% 95% at 60% 12%,var(--canvas-warm),transparent 60%),var(--canvas);padding:30px;border-radius:14px;border:1px solid var(--border)">
+        <div class="frame" style="position:relative;left:0;top:0;width:100%;height:312px">
+          <div class="frame-head" style="cursor:default">
+            <span class="frame-glyph"></span>
+            <span class="frame-name">checkout</span>
+            <span class="frame-sub">· shipping the new flow</span>
+            <span class="frame-count">3</span>
+            <span class="frame-flag" style="--fc:var(--st-blocked)">needs you</span>
+          </div>
+          <div class="item" data-status="running" style="position:absolute;left:26px;top:84px;width:218px;height:150px">
+            <div class="item-bar"><span class="bead"></span><span class="item-name">payments</span><span class="status-word">running</span></div>
+            <div class="term"><div class="ln cy">● Editing <span class="grn">webhook.ts</span></div><div class="ln muted">+ retry w/ backoff</div><div class="ln cy">⠹ thinking<span class="cursor"></span></div></div>
+          </div>
+          <div class="item" data-status="blocked" style="position:absolute;right:26px;top:84px;width:218px;height:150px">
+            <div class="item-bar"><span class="bead"></span><span class="item-name">auth-service</span><span class="status-word">blocked</span></div>
+            <div class="term"><div class="ln am">⏸ Permission</div><div class="ln muted">Allow `npm install`?</div><div class="ln grn">❯ Yes <span class="muted">No</span></div></div>
+          </div>
+        </div>
+        <p class="lede" style="margin-top:18px;font-size:14px">A frame’s label carries the concern name, an agent count, and — only when a card inside is loud — a quiet <b>“needs you”</b> tag. The frame itself never glows.</p>
+      </div>
+      <div>
+        <div style="display:flex;flex-direction:column;gap:18px">
+          <div class="motion-card" style="background:var(--doc-panel)"><h3>Boundary, not a box</h3><p class="sub" style="margin:0">Cards aren’t trapped — a frame is a backdrop you drop them onto. Drag a card out and it simply leaves the group; the frame re-reads its members on the fly.</p></div>
+          <div class="motion-card" style="background:var(--doc-panel)"><h3>Click to fit the group</h3><p class="sub" style="margin:0">Tapping a frame’s label runs the same camera glide as a card fly-to, framed to that cluster — the fast way to zoom from the whole room into one concern.</p></div>
+          <div class="motion-card" style="background:var(--doc-panel)"><h3>Calm by contract</h3><p class="sub" style="margin:0">Dashed hairline, faint fill, no halo. Frames give structure without ever competing with the warm glow that means an agent needs you.</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== STATE SPEC SHEET ===================== -->
+<section class="block" id="states">
+  <div class="wrap">
+    <div class="kicker">3.2 · The Agent Card</div>
+    <h1 class="sec">Five states + a dormant placeholder</h1>
+    <p class="lede" style="margin-bottom:30px">Mutually exclusive, instantly distinguishable, colorblind-safe. Calm states are cool &amp; desaturated; loud states are warm &amp; bright — so any warm glow on the canvas <i>means</i> “needs you.” Status is runtime-only and never persisted: a reopened card always starts idle.</p>
+
+    <div class="state-grid t-dark">
+      <!-- idle -->
+      <div class="state-cell">
+        <div class="state-stage"><div class="state-mini item" data-status="idle">
+          <div class="item-bar"><span class="bead"></span><span class="item-name">docs-site</span><span class="status-word">idle</span></div>
+          <div class="term"><div class="ln muted">claude › last run 2h ago</div><div class="ln muted">no recent activity</div><div class="ln muted">›<span class="cursor dim"></span></div></div>
+        </div></div>
+        <div class="state-meta"><div class="nm"><span class="swatch" style="background:var(--st-idle)"></span>Idle<span class="lvl-tag lvl-quiet">silent</span></div>
+          <div class="desc">Dormant / no recent activity. No glow, dim bead — recedes completely.</div></div>
+      </div>
+      <!-- running -->
+      <div class="state-cell">
+        <div class="state-stage"><div class="state-mini item" data-status="running">
+          <div class="item-bar"><span class="bead"></span><span class="item-name">api-gateway</span><span class="status-word">running</span></div>
+          <div class="term"><div class="ln cy">● Editing src/limit.ts</div><div class="ln muted">+ token bucket</div><div class="ln cy">⠹ thinking<span class="cursor"></span></div></div>
+        </div></div>
+        <div class="state-meta"><div class="nm"><span class="swatch" style="background:var(--st-running)"></span>Running<span class="lvl-tag lvl-quiet">ambient</span></div>
+          <div class="desc">Actively working. Soft teal halo with a slow 3.4s breathing pulse.</div></div>
+      </div>
+      <!-- done -->
+      <div class="state-cell">
+        <div class="state-stage"><div class="state-mini item" data-status="done">
+          <div class="item-bar"><span class="bead"></span><span class="item-name">web-app</span><span class="status-word">done</span></div>
+          <div class="term"><div class="ln grn">✓ Done. 3 files.</div><div class="ln muted">tests green</div><div class="ln muted">›<span class="cursor"></span></div></div>
+        </div></div>
+        <div class="state-meta"><div class="nm"><span class="swatch" style="background:var(--st-done)"></span>Done<span class="lvl-tag lvl-quiet">noticeable</span></div>
+          <div class="desc">Finished a turn, awaiting you. Steady sage glow, no motion — calm but present.</div></div>
+      </div>
+      <!-- blocked -->
+      <div class="state-cell">
+        <div class="state-stage"><div class="state-mini item" data-status="blocked">
+          <div class="item-bar"><span class="bead"></span><span class="item-name">auth-service</span><span class="status-word">blocked</span></div>
+          <div class="term"><div class="ln am">⏸ Permission</div><div class="ln muted">Allow `npm install`?</div><div class="ln grn">❯ Yes <span class="muted">No</span></div></div>
+        </div></div>
+        <div class="state-meta"><div class="nm"><span class="swatch" style="background:var(--st-blocked)"></span>Blocked<span class="lvl-tag lvl-loud">loud</span></div>
+          <div class="desc">Needs the human now. Amber flood + urgent 1.8s pulse. Rises above siblings.</div></div>
+      </div>
+      <!-- error -->
+      <div class="state-cell">
+        <div class="state-stage"><div class="state-mini item" data-status="error">
+          <div class="item-bar"><span class="bead"></span><span class="item-name">scraper</span><span class="status-word">error</span></div>
+          <div class="term"><div class="ln rd">✗ ECONNREFUSED</div><div class="ln muted">at Socket.onError</div><div class="ln rd">agent halted</div></div>
+        </div></div>
+        <div class="state-meta"><div class="nm"><span class="swatch" style="background:var(--st-error)"></span>Error<span class="lvl-tag lvl-loud">loud</span></div>
+          <div class="desc">A tool/agent error. Red flood + a steady alarm blink on the bead.</div></div>
+      </div>
+      <!-- dormant -->
+      <div class="state-cell">
+        <div class="state-stage"><div class="state-mini item" data-status="idle">
+          <div class="item-bar"><span class="bead"></span><span class="item-name">ml-pipeline</span><span class="status-word">idle</span></div>
+          <div class="dormant" style="gap:6px"><div class="play" style="width:30px;height:30px"><svg viewBox="0 0 24 24" fill="currentColor" style="width:11px;height:11px"><path d="M8 5v14l11-7z"/></svg></div><div class="sub">tap to start</div></div>
+        </div></div>
+        <div class="state-meta"><div class="nm"><span class="swatch" style="background:var(--border)"></span>Dormant<span class="lvl-tag lvl-quiet">placeholder</span></div>
+          <div class="desc">Restored but not yet started — agents spawn lazily. A “tap to start,” not a terminal.</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== FOCUS ===================== -->
+<section class="block" id="focus">
+  <div class="wrap">
+    <div class="kicker">3.2 · Card content · zoomed in</div>
+    <h1 class="sec">Focused card — the live terminal</h1>
+    <p class="lede" style="margin-bottom:30px">Double-click flies the camera in until one card fills the view. The same artwork as god-view, full size. Same frame in <b>both modes</b> — the terminal stays a glowing dark screen in either; only the chrome around it shifts.</p>
+    <div class="two-col">
+      <div>
+        <div class="pair-label"><span class="dotk" style="background:oklch(0.3 0.02 290)"></span>Dark</div>
+        <div class="mac t-dark"><div class="mac-bar"><div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div><div class="mac-title">api-gateway</div></div>
+          <div class="focus-frame" style="height:auto;padding:26px">
+            <div class="item focus-card" data-status="running" style="max-width:100%">
+              <div class="item-bar"><span class="bead"></span><span class="item-name"><span class="dir">~/work/</span>api-gateway</span><span class="crumbs">claude · main</span><span class="status-word">running</span></div>
+              <div class="term"><div class="ln"><span class="vi">claude</span> <span class="muted">› implement a sliding-window rate limiter</span></div><div class="ln">&nbsp;</div><div class="ln cy">● Read <span class="grn">src/middleware/limit.ts</span></div><div class="ln cy">● Editing <span class="grn">src/middleware/limit.ts</span></div><div class="ln muted">  + token bucket · 60 req / 60s window</div><div class="ln muted">  + 429 with Retry-After header</div><div class="ln cy">● Running <span class="muted">npm test --silent</span></div><div class="ln">  <span class="grn">✓</span> 14 passing <span class="muted">· 1.2s</span></div><div class="ln">&nbsp;</div><div class="ln cy">⠹ <span class="muted">writing tests for burst behaviour</span><span class="cursor"></span></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="pair-label"><span class="dotk" style="background:oklch(0.85 0.01 82)"></span>Light</div>
+        <div class="mac t-light"><div class="mac-bar"><div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div><div class="mac-title">api-gateway</div></div>
+          <div class="focus-frame" style="height:auto;padding:26px">
+            <div class="item focus-card" data-status="running" style="max-width:100%">
+              <div class="item-bar"><span class="bead"></span><span class="item-name"><span class="dir">~/work/</span>api-gateway</span><span class="crumbs">claude · main</span><span class="status-word">running</span></div>
+              <div class="term"><div class="ln"><span class="vi">claude</span> <span class="muted">› implement a sliding-window rate limiter</span></div><div class="ln">&nbsp;</div><div class="ln cy">● Read <span class="grn">src/middleware/limit.ts</span></div><div class="ln cy">● Editing <span class="grn">src/middleware/limit.ts</span></div><div class="ln muted">  + token bucket · 60 req / 60s window</div><div class="ln muted">  + 429 with Retry-After header</div><div class="ln cy">● Running <span class="muted">npm test --silent</span></div><div class="ln">  <span class="grn">✓</span> 14 passing <span class="muted">· 1.2s</span></div><div class="ln">&nbsp;</div><div class="ln cy">⠹ <span class="muted">writing tests for burst behaviour</span><span class="cursor"></span></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== DIFF TOOL ===================== -->
+<section class="block" id="diff">
+  <div class="wrap">
+    <div class="kicker">3.3 · The Diff Object · the one interactive tool</div>
+    <h1 class="sec">The diff object</h1>
+    <p class="lede" style="margin-bottom:22px">A separate floating tool pointed at a folder’s git working tree. Staged &amp; unstaged groups (a file can sit in <b>both</b>), per-file and bulk actions, a unified diff, and a commit area gated on <b>≥1 staged change + a message</b>. Try it: select files, stage/unstage on hover, type a message to arm Commit, or discard to trigger the confirmation.</p>
+
+    <div class="state-stage" style="height:auto;padding:14px;border-radius:14px;display:flex;gap:8px;justify-content:flex-start;margin-bottom:16px;background:var(--doc-panel);border:1px solid var(--doc-line)">
+      <span class="pair-label" style="margin:0 8px 0 4px">Edge states →</span>
+      <div class="theme-toggle" style="background:transparent;border:0;padding:0;gap:4px">
+        <button data-diffview="diff" aria-pressed="true">Working tree</button>
+        <button data-diffview="loading" aria-pressed="false">Loading diff</button>
+        <button data-diffview="clean" aria-pressed="false">No changes</button>
+        <button data-diffview="norepo" aria-pressed="false">Not a repo</button>
+      </div>
+    </div>
+
+    <div class="mac t-dark" id="diffWindow" data-follow-theme>
+      <div class="mac-bar"><div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+        <div class="mac-title">auth-service — working tree
+          <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted)">· <span style="color:var(--diff-add)">+84</span> <span style="color:var(--diff-del)">−12</span></span></div>
+      </div>
+      <div class="difftool" id="difftool"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== NOTIFICATION CENTER ===================== -->
+<section class="block" id="notify">
+  <div class="wrap">
+    <div class="kicker">New · Activity feed</div>
+    <h1 class="sec">The notification center</h1>
+    <p class="lede" style="margin-bottom:30px">A constant-size overlay docked top-right — the only chrome that keeps its size regardless of zoom. Every status change becomes one notification, newest first, loud states flagged. <b>Click a notification and the camera flies to that agent.</b> It’s the fast path to “which one needs me” when the canvas scrolls off-screen.</p>
+    <div class="two-col" style="grid-template-columns:340px 1fr;align-items:start;gap:34px">
+      <div class="t-dark" style="background:radial-gradient(120% 90% at 60% 20%,var(--canvas-warm),transparent 60%),var(--canvas);padding:26px;border-radius:14px;border:1px solid var(--border)">
+        <aside class="notif" style="position:relative;top:0;right:0;width:100%;max-height:none">
+          <div class="notif-head"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg><span class="t">Activity</span><span class="count">2</span><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></div>
+          <div class="notif-list">
+            <div class="nrow loud" data-s="blocked" style="--nd:var(--st-blocked)"><span class="ndot"></span><div class="nbody"><div class="nname">auth-service<span class="ntag">blocked</span></div><div class="nmsg">Needs permission — `npm install`</div></div><div class="ntime">now</div></div>
+            <div class="nrow loud" data-s="error" style="--nd:var(--st-error)"><span class="ndot"></span><div class="nbody"><div class="nname">scraper<span class="ntag">error</span></div><div class="nmsg">ECONNREFUSED — agent halted</div></div><div class="ntime">1m</div></div>
+            <div class="nrow" data-s="done" style="--nd:var(--st-done)"><span class="ndot"></span><div class="nbody"><div class="nname">payments<span class="ntag">done</span></div><div class="nmsg">Finished — waiting for input</div></div><div class="ntime">4m</div></div>
+            <div class="nrow" data-s="running" style="--nd:var(--st-running)"><span class="ndot"></span><div class="nbody"><div class="nname">api-gateway<span class="ntag">running</span></div><div class="nmsg">Started — implementing limiter</div></div><div class="ntime">14m</div></div>
+          </div>
+          <div class="notif-foot"><span>Newest first</span><a>Mark all read</a></div>
+        </aside>
+      </div>
+      <div>
+        <div style="display:flex;flex-direction:column;gap:18px">
+          <div class="motion-card" style="background:var(--doc-panel)"><h3>One item per change</h3><p class="sub" style="margin:0">Every state transition becomes a self-contained notification, newest first. The badge counts only loud (blocked + error) items.</p></div>
+          <div class="motion-card" style="background:var(--doc-panel)"><h3>Click → fly-to</h3><p class="sub" style="margin:0">Selecting a row runs the same camera fly-to as double-clicking the card, plus a ping ring in the status color so you don’t lose it on arrival.</p></div>
+          <div class="motion-card" style="background:var(--doc-panel)"><h3>Collapsible &amp; calm</h3><p class="sub" style="margin:0">Slides away to a thin edge tab so it never competes with the canvas. Loud rows carry a glowing dot; calm rows stay muted.</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== EMPTY FIRST RUN ===================== -->
+<section class="block" id="empty">
+  <div class="wrap">
+    <div class="kicker">2 · First thing every user sees</div>
+    <h1 class="sec">Empty first run</h1>
+    <p class="lede" style="margin-bottom:30px">No demo content — just a vast, quiet canvas and one calm hint. Both modes.</p>
+    <div class="two-col">
+      <div><div class="pair-label"><span class="dotk" style="background:oklch(0.3 0.02 290)"></span>Dark</div>
+        <div class="mac t-dark"><div class="mac-bar"><div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div><div class="mac-title">Agent Canvas</div></div>
+          <div class="viewport short" style="cursor:default"><div class="surface"><div class="dotfield"></div></div>
+            <div class="empty-run"><div class="empty-card"><div class="mark"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></div>
+              <h2>A quiet place for your agents</h2><p>Spawn a coding agent into a folder and it appears here. Zoom out to watch them all; the one that needs you will glow.</p>
+              <div class="empty-keys"><span class="kbd">⌘ N</span> new agent <span style="opacity:.5">·</span> <span class="kbd">double-click</span> to fit</div></div></div>
+          </div></div></div>
+      <div><div class="pair-label"><span class="dotk" style="background:oklch(0.85 0.01 82)"></span>Light</div>
+        <div class="mac t-light"><div class="mac-bar"><div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div><div class="mac-title">Agent Canvas</div></div>
+          <div class="viewport short" style="cursor:default"><div class="surface"><div class="dotfield"></div></div>
+            <div class="empty-run"><div class="empty-card"><div class="mark"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></div>
+              <h2>A quiet place for your agents</h2><p>Spawn a coding agent into a folder and it appears here. Zoom out to watch them all; the one that needs you will glow.</p>
+              <div class="empty-keys"><span class="kbd">⌘ N</span> new agent <span style="opacity:.5">·</span> <span class="kbd">double-click</span> to fit</div></div></div>
+          </div></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== TOKENS ===================== -->
+<section class="block" id="tokens">
+  <div class="wrap">
+    <div class="kicker">5 · Design tokens · light + dark</div>
+    <h1 class="sec">The token set</h1>
+    <p class="lede" style="margin-bottom:30px">Every role filled in both modes, mapped 1:1 to the schema. Swatches below show <b>dark / light</b> side by side.</p>
+    <div id="tokRoot"></div>
+  </div>
+</section>
+
+<!-- ===================== MOTION ===================== -->
+<section class="block" id="motion">
+  <div class="wrap">
+    <div class="kicker">5 · Motion · timing + easing</div>
+    <h1 class="sec">Motion notes</h1>
+    <p class="lede" style="margin-bottom:30px">Two motions carry the “trustworthy + beautiful” promise: the camera fly-to and the status-change transition.</p>
+    <div class="motion-board">
+      <div class="motion-card">
+        <h3>Camera fly-to</h3><p class="sub">Double-click a card / click a notification → glide + zoom to fill.</p>
+        <div class="frames">
+          <div class="fr"><div class="blip" style="width:18%;height:18%"></div><span class="lbl">god-view</span></div>
+          <div class="fr"><div class="blip" style="width:40%;height:40%"></div><span class="lbl">glide</span></div>
+          <div class="fr"><div class="blip" style="width:78%;height:70%"></div><span class="lbl">focus</span></div>
+        </div>
+        <div class="motion-specs">
+          <div class="mspec"><span class="k">Fly into item</span><span class="v">640ms</span></div>
+          <div class="mspec"><span class="k">Zoom out to fit</span><span class="v">760ms</span></div>
+          <div class="mspec"><span class="k">Easing</span><span class="v">cubic-bezier(.22,1,.36,1)</span></div>
+          <div class="mspec"><span class="k">Arrival ping ring</span><span class="v">700ms · status hue</span></div>
+        </div>
+        <div class="ease-demo"><i></i></div>
+      </div>
+      <div class="motion-card">
+        <h3>Status change</h3><p class="sub">e.g. running → blocked. A one-time flare, then settle into the steady signal.</p>
+        <div class="frames">
+          <div class="fr"><div class="blip"></div><span class="lbl">running</span></div>
+          <div class="fr"><div class="blip" style="box-shadow:0 0 24px 4px var(--st-blocked);border-color:var(--st-blocked)"></div><span class="lbl">flare</span></div>
+          <div class="fr"><div class="blip" style="box-shadow:0 0 12px 2px var(--st-blocked);border-color:var(--st-blocked)"></div><span class="lbl">breathe</span></div>
+        </div>
+        <div class="motion-specs">
+          <div class="mspec"><span class="k">Colour cross-fade</span><span class="v">300ms · ease</span></div>
+          <div class="mspec"><span class="k">Loud entry flare</span><span class="v">440ms scale-pulse</span></div>
+          <div class="mspec"><span class="k">Blocked breathing</span><span class="v">1.8s loop</span></div>
+          <div class="mspec"><span class="k">Running breathing</span><span class="v">3.4s loop</span></div>
+          <div class="mspec"><span class="k">Error / done</span><span class="v">steady (blink / none)</span></div>
+        </div>
+        <div class="ease-demo"><i style="animation-duration:1.8s"></i></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="foot"><div class="wrap fl">
+  <div>Agent Canvas — design system &amp; screens. Lo-fi dusk studio.</div>
+  <div style="font-family:var(--font-mono);font-size:11px">native macOS · light + dark · one window · infinite zoom</div>
+</div></footer>
+
+<script src="js/canvas.js"></script>
+<script src="js/diff.js"></script>
+<script src="js/tokens.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

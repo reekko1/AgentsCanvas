@@ -7,6 +7,8 @@ enum CanvasLayout {
     static let cardSize = NSSize(width: 960, height: 640)
     /// On-canvas size of a diff object — a touch wider than a card for its two-pane split.
     static let diffSize = NSSize(width: 1100, height: 720)
+    /// Default on-canvas size of a new frame — big enough to drop a cluster of cards into.
+    static let frameSize = NSSize(width: 1060, height: 780)
     /// Interior padding around a card's terminal (within the terminal's own
     /// background), so the CLI text has breathing room from the window edges.
     static let terminalPadding: CGFloat = 12
