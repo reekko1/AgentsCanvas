@@ -35,6 +35,7 @@ final class DiffObject: CanvasItem {
             self?.diffView.apply(snapshot)
             self?.containerView.setTitle(self?.titleText(for: snapshot) ?? "")
         }
+        diffView.onMutated = { [weak self] in self?.watcher.poke() }  // refresh right after a git action
     }
 
     func start() { watcher.start() }

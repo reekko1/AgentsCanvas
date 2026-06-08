@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Agent Canvas — a native macOS infinite-canvas app for supervising many coding agents at once ("telescope, not cockpit"; **observe, don't orchestrate**). The god-view is pure read-only: the only verb is *click a card → fly in*. Full product spec in `AGENT-CANVAS-PRD.md`.
+Agent Canvas — a native macOS infinite-canvas app for supervising many coding agents at once ("telescope, not cockpit"; **observe, don't orchestrate** *agents*). The card god-view is read-only: the only verb is *click a card → fly in*. **Scoped exception:** the Diff Object permits explicit, user-initiated git actions (stage/unstage/discard/commit) on its working tree, with destructive ones confirmed — direct working-tree manipulation, not agent orchestration (PRD §3.1/§4.2). Full product spec in `AGENT-CANVAS-PRD.md`.
 
 ## Build & run
 
@@ -35,7 +35,7 @@ Source layout under `Sources/AgentCanvas/` (SPM globs subfolders automatically �
   - `CanvasToolbar.swift` — the window's unified `NSToolbar`; holds the create actions (new agent card, new diff object) and is where future toolbar actions go.
   - `DocumentView.swift` — the flipped document surface.
 - **Cards/** — `Card.swift` (a `CanvasItem`; owns the terminal + `apply(status)`), `CardStatus.swift` (enum + color/isLoud), `ItemStore.swift` (registry over **all** `CanvasItem`s — id sequence, `bounds`, Workspace (de)serialize — pure data, no views; `card(id)` is a typed convenience for the spine).
-- **Diff/** — the diff object (PRD §4.2). `DiffObject.swift` (a `CanvasItem`; owns the diff view + watcher, neutral border, diffstat in its title bar), `GitDiff.swift` (read-only git invocation + porcelain/numstat parsing — never mutates the repo), `DiffWatcher.swift` (debounced background poll, only delivers on signature change), `DiffContentView.swift` (two-pane file-list + colored unified diff).
+- **Diff/** — the diff object (PRD §4.2). `DiffObject.swift` (a `CanvasItem`; owns the diff view + watcher, neutral border, diffstat in its title bar), `GitDiff.swift` (**read-only** git invocation + porcelain/numstat parsing — never mutates; `GitChange` carries `hasStaged`/`hasUnstaged`), `GitActions.swift` (the **mutating** counterpart — stage/unstage/discard/stageAll/discardAll/commit; shared `Git.run` runner used by both), `DiffWatcher.swift` (debounced background poll + `poke()` for immediate post-action refresh), `DiffContentView.swift` (two-pane file-list + colored diff, per-row hover Stage/Unstage/Discard buttons, commit/bulk footer; destructive actions confirmed via `NSAlert` sheets). Read path and write path are deliberately separate files.
 - **Spine/** — the attention spine (see below). `Spine.swift` (owns sink + sender script + adapter; exposes `onStatus:(cardId, CardStatus)`), `HookSink.swift` (loopback TCP listener), `AgentAdapter.swift` (protocol), `ClaudeCodeAdapter.swift`.
 - **Persistence/** — `Workspace.swift` (Codable, heterogeneous `items[]` keyed by `kind`).
 - **Support/** — `Theme.swift` (all colors + fonts, role-named; `Theme.colors.x` / `Theme.fonts.x`, swappable via `Theme.current` — **no color/font literals belong anywhere else**), `CanvasLayout.swift` (size/margin constants — geometry stays here, not in the theme), `Log.swift` (`canvasLog`).

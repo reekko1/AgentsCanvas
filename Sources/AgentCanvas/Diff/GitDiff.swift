@@ -31,6 +31,8 @@ struct GitChange {
     let status: GitFileStatus
     let added: Int
     let removed: Int
+    let hasStaged: Bool     // index column (X) set — there are staged changes
+    let hasUnstaged: Bool   // worktree column (Y) set — there are unstaged changes (incl. untracked)
 }
 
 /// A point-in-time view of a working tree. `isRepo == false` means the folder is
@@ -54,12 +56,13 @@ enum GitDiff {
     /// Full working-tree snapshot vs HEAD (staged + unstaged + untracked).
     /// Runs `git` synchronously — call off the main thread.
     static func snapshot(folder: URL) -> GitSnapshot {
-        let (rc, head) = run(["rev-parse", "--is-inside-work-tree"], in: folder)
-        guard rc == 0, String(decoding: head, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+        let head = Git.run(["rev-parse", "--is-inside-work-tree"], in: folder)
+        guard head.code == 0,
+              String(decoding: head.out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "true"
         else { return .notRepo }
 
-        let (_, statusData) = run(["status", "--porcelain=v1", "-z", "--untracked-files=all"], in: folder)
-        let (_, numstatData) = run(["diff", "HEAD", "--numstat", "-z"], in: folder)
+        let statusData = Git.run(["status", "--porcelain=v1", "-z", "--untracked-files=all"], in: folder).out
+        let numstatData = Git.run(["diff", "HEAD", "--numstat", "-z"], in: folder).out
         let signature = String(decoding: statusData, as: UTF8.self) + "\u{1}" + String(decoding: numstatData, as: UTF8.self)
 
         let entries = parseStatus(statusData)
@@ -78,7 +81,8 @@ enum GitDiff {
                 (a, r) = (0, 0)
             }
             totalAdded += a; totalRemoved += r
-            changes.append(GitChange(path: e.path, oldPath: e.oldPath, status: e.status, added: a, removed: r))
+            changes.append(GitChange(path: e.path, oldPath: e.oldPath, status: e.status, added: a, removed: r,
+                                     hasStaged: e.hasStaged, hasUnstaged: e.hasUnstaged))
         }
         return GitSnapshot(isRepo: true, changes: changes, totalAdded: totalAdded, totalRemoved: totalRemoved,
                            signature: signature)
@@ -89,16 +93,18 @@ enum GitDiff {
     static func fileDiff(folder: URL, change: GitChange) -> String {
         if change.status == .untracked {
             // Untracked files have no HEAD blob; compare against /dev/null. Exit code 1 is normal here.
-            let (_, data) = run(["diff", "--no-index", "--", "/dev/null", change.path], in: folder)
-            return String(decoding: data, as: UTF8.self)
+            return String(decoding: Git.run(["diff", "--no-index", "--", "/dev/null", change.path], in: folder).out,
+                          as: UTF8.self)
         }
-        let (_, data) = run(["diff", "HEAD", "--", change.path], in: folder)
-        return String(decoding: data, as: UTF8.self)
+        return String(decoding: Git.run(["diff", "HEAD", "--", change.path], in: folder).out, as: UTF8.self)
     }
 
     // MARK: Parsing
 
-    private struct Entry { let path: String; let oldPath: String?; let status: GitFileStatus }
+    private struct Entry {
+        let path: String; let oldPath: String?; let status: GitFileStatus
+        let hasStaged: Bool; let hasUnstaged: Bool
+    }
 
     /// Parse `git status --porcelain=v1 -z`: NUL-separated `XY PATH` records; a
     /// rename/copy record is followed by an extra NUL field carrying the old path.
@@ -109,14 +115,19 @@ enum GitDiff {
         while i < fields.count {
             let field = String(fields[i]); i += 1
             guard field.count >= 4 else { continue }   // "XY P"
-            let code = String(field.prefix(2))
+            let code = Array(field.prefix(2))          // [X, Y]
+            let x = code[0], y = code[1]
             let path = String(field.dropFirst(3))      // skip "XY "
-            let status = classify(code)
+            let status = classify(String(code))
+            // X = index/staged column, Y = worktree column ('?' = untracked → unstaged).
+            let hasStaged = x != " " && x != "?"
+            let hasUnstaged = y != " "
             var oldPath: String? = nil
-            if (code.contains("R") || code.contains("C")), i < fields.count {
+            if (x == "R" || x == "C"), i < fields.count {
                 oldPath = String(fields[i]); i += 1    // rename/copy: next field is the old path
             }
-            entries.append(Entry(path: path, oldPath: oldPath, status: status))
+            entries.append(Entry(path: path, oldPath: oldPath, status: status,
+                                 hasStaged: hasStaged, hasUnstaged: hasUnstaged))
         }
         return entries
     }
@@ -160,26 +171,5 @@ enum GitDiff {
         if s.isEmpty { return 0 }
         return s.hasSuffix("\n") ? s.split(separator: "\n", omittingEmptySubsequences: false).count - 1
                                  : s.split(separator: "\n").count
-    }
-
-    // MARK: Process
-
-    /// Run `git <args>` in `folder`, returning (exitCode, stdout). stderr is discarded.
-    private static func run(_ args: [String], in folder: URL) -> (Int32, Data) {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        p.arguments = ["git"] + args
-        p.currentDirectoryURL = folder
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
-        do {
-            try p.run()
-        } catch {
-            return (-1, Data())
-        }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        return (p.terminationStatus, data)
     }
 }

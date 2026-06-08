@@ -25,7 +25,7 @@ This product is a **supervision interface**. It bets on human spatial memory as 
 
 These principles were chosen deliberately; every feature decision must defend them.
 
-1. **Observe, don't orchestrate.** The app never owns the agent lifecycle, never creates worktrees, never sends commands on your behalf. It spawns a shell, watches the filesystem, and listens for hook events. That's the whole contract.
+1. **Observe, don't orchestrate (agents).** The app never owns the *agent* lifecycle, never creates worktrees, never sends commands to an agent on your behalf, and never acts autonomously. It spawns a shell, watches the filesystem, and listens for hook events. *Scoped exception (added intentionally):* the Diff Object lets **you** perform explicit git actions (stage/unstage/discard/commit) on a working tree you're looking at — this is direct user manipulation of files (like a git GUI or your editor), not the app orchestrating agents, and destructive actions are gated by confirmation. The card god-view stays read-only.
 2. **One actor — you.** No broadcast input, no fan-out commands, no inline "approve for me." God-view is read-only triage; you act by walking over (zooming in) to the agent.
 3. **Cards are independent worlds.** No cross-card actions. The canvas is a room of separate agents, not a fleet you pilot from a console.
 4. **Spatial memory is the index.** Location = meaning. "Auth refactor lives top-left; bug hunt bottom-right." You should rarely need to read a label.
@@ -45,7 +45,9 @@ A card is deliberately **light**:
 That's it. The card does *not* bundle the diff/tree (see 4.2). It is "a terminal with a trustworthy state light."
 
 ### 4.2 The Diff Object (separate, floating)
-The git diff + uncommitted-file tree is **its own movable canvas object**, not bolted to a card. You point it at a folder/working tree and place it wherever you want — typically near the agent that's editing that repo. This keeps the card minimal and stays true to the pure-viewport philosophy.
+The git diff + uncommitted-file tree is **its own movable canvas object**, not bolted to a card. You point it at a folder/working tree and place it wherever you want — typically near the agent that's editing that repo. This keeps the card minimal.
+
+It also supports **explicit, user-initiated git actions**: stage/unstage and discard per file (hover the row), plus Stage All / Discard All and a commit footer. Destructive actions (discard, discard all) require a confirmation; commit requires a message. These act only on the working tree you wired the object to — see the scoped exception in §3.1.
 
 ### 4.3 The Canvas
 An infinite, zoomable, pannable surface. Two primary altitudes:
@@ -161,7 +163,7 @@ Success signal: a red "blocked" glyph reliably draws your attention from across 
 ## 10. Non-goals (to protect the philosophy)
 
 - Not a tiling terminal (iTerm/tmux) and not an IDE.
-- No orchestration: no broadcast input, no group commands, no app-initiated agent actions.
+- No orchestration *of agents*: no broadcast input, no group commands, no app-initiated or autonomous agent actions. (The Diff Object's git actions are user-initiated working-tree edits, not agent orchestration — §3.1, §4.2.)
 - No worktree management or project management by the app.
 - No acting on agents from god-view.
 - No cloud, no account, no telemetry required to use it.

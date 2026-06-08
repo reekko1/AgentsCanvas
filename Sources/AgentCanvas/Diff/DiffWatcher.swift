@@ -36,6 +36,10 @@ final class DiffWatcher {
         timer = nil
     }
 
+    /// Force an immediate refresh (e.g. right after a git action) instead of waiting
+    /// for the next poll. The signature will have changed, so `tick` delivers.
+    func poke() { queue.async { [weak self] in self?.tick() } }
+
     private func tick() {
         let snap = GitDiff.snapshot(folder: folder)
         guard snap.signature != lastSignature else { return }
