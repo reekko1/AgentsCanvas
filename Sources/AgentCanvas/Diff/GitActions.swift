@@ -65,6 +65,10 @@ enum GitActions {
         result(Git.run(["add", "-A"], in: folder))
     }
 
+    static func unstageAll(folder: URL) -> GitActionResult {
+        result(Git.run(["restore", "--staged", "--", "."], in: folder))
+    }
+
     /// Reset the whole working tree to a clean HEAD: revert tracked changes AND
     /// remove untracked files/dirs. Nuclear — confirm strongly first.
     static func discardAll(folder: URL) -> GitActionResult {

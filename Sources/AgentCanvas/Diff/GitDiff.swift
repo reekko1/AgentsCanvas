@@ -12,14 +12,27 @@ enum GitFileStatus {
         case .renamed:           return Theme.colors.fileRenamed
         }
     }
-    /// Single-letter badge shown in the file list.
+    /// Single-letter badge shown in the file list (VS Code parity: untracked = U).
     var letter: String {
         switch self {
         case .added:     return "A"
         case .modified:  return "M"
         case .deleted:   return "D"
         case .renamed:   return "R"
-        case .untracked: return "?"
+        case .untracked: return "U"
+        }
+    }
+
+    /// Map a porcelain status char (one column of `XY`) to a status; `nil` for a
+    /// blank column (no change on that side).
+    init?(code: Character) {
+        switch code {
+        case "A": self = .added
+        case "M", "T": self = .modified
+        case "D": self = .deleted
+        case "R", "C": self = .renamed
+        case "?": self = .untracked
+        default: return nil
         }
     }
 }
@@ -33,6 +46,8 @@ struct GitChange {
     let removed: Int
     let hasStaged: Bool     // index column (X) set — there are staged changes
     let hasUnstaged: Bool   // worktree column (Y) set — there are unstaged changes (incl. untracked)
+    let stagedStatus: GitFileStatus?    // X column → shown in the "Staged Changes" group
+    let unstagedStatus: GitFileStatus?  // Y column → shown in the "Changes" group
 }
 
 /// A point-in-time view of a working tree. `isRepo == false` means the folder is
@@ -82,7 +97,8 @@ enum GitDiff {
             }
             totalAdded += a; totalRemoved += r
             changes.append(GitChange(path: e.path, oldPath: e.oldPath, status: e.status, added: a, removed: r,
-                                     hasStaged: e.hasStaged, hasUnstaged: e.hasUnstaged))
+                                     hasStaged: e.hasStaged, hasUnstaged: e.hasUnstaged,
+                                     stagedStatus: e.stagedStatus, unstagedStatus: e.unstagedStatus))
         }
         return GitSnapshot(isRepo: true, changes: changes, totalAdded: totalAdded, totalRemoved: totalRemoved,
                            signature: signature)
@@ -104,6 +120,7 @@ enum GitDiff {
     private struct Entry {
         let path: String; let oldPath: String?; let status: GitFileStatus
         let hasStaged: Bool; let hasUnstaged: Bool
+        let stagedStatus: GitFileStatus?; let unstagedStatus: GitFileStatus?
     }
 
     /// Parse `git status --porcelain=v1 -z`: NUL-separated `XY PATH` records; a
@@ -122,12 +139,15 @@ enum GitDiff {
             // X = index/staged column, Y = worktree column ('?' = untracked → unstaged).
             let hasStaged = x != " " && x != "?"
             let hasUnstaged = y != " "
+            let stagedStatus = hasStaged ? GitFileStatus(code: x) : nil
+            let unstagedStatus = hasUnstaged ? GitFileStatus(code: y) : nil
             var oldPath: String? = nil
             if (x == "R" || x == "C"), i < fields.count {
                 oldPath = String(fields[i]); i += 1    // rename/copy: next field is the old path
             }
             entries.append(Entry(path: path, oldPath: oldPath, status: status,
-                                 hasStaged: hasStaged, hasUnstaged: hasUnstaged))
+                                 hasStaged: hasStaged, hasUnstaged: hasUnstaged,
+                                 stagedStatus: stagedStatus, unstagedStatus: unstagedStatus))
         }
         return entries
     }

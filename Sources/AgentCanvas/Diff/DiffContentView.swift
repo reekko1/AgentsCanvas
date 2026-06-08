@@ -3,10 +3,27 @@ import AppKit
 /// A per-file git action. Reversible ones (stage/unstage) run immediately; `discard`
 /// is destructive and is gated by a confirmation in `DiffContentView`.
 enum DiffAction { case stage, unstage, discard }
+/// A group-level git action (hover actions on a section header).
+enum DiffBulkAction { case stageAll, unstageAll, discardAll }
 
-/// The diff object's content: a two-pane view — a changed-file list on the left and
-/// the selected file's colored unified diff on the right — plus a footer with git
-/// actions (stage/unstage/discard per file via hover, commit + bulk in the footer).
+/// Which section a file row belongs to — decides its status letter and actions.
+private enum DiffSide { case staged, unstaged }
+
+/// All SF Symbols in the panel share one size/weight so they look consistent.
+private func sfSymbol(_ name: String, size: CGFloat = 12, weight: NSFont.Weight = .medium) -> NSImage? {
+    let cfg = NSImage.SymbolConfiguration(pointSize: size, weight: weight)
+    return NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(cfg)
+}
+
+/// Outline model nodes (classes so NSOutlineView can track them by identity).
+private final class GroupNode { let side: DiffSide; let title: String; var files: [FileNode] = []
+    init(_ side: DiffSide, _ title: String) { self.side = side; self.title = title } }
+private final class FileNode { let change: GitChange; let side: DiffSide
+    init(_ change: GitChange, _ side: DiffSide) { self.change = change; self.side = side } }
+
+/// The diff object's content, styled after VS Code's Source Control panel: a left
+/// column with a commit area on top and a collapsible Staged/Changes file tree, and
+/// the selected file's colored unified diff on the right.
 /// Reads via `GitDiff`; mutates via `GitActions` (destructive actions confirmed).
 ///
 /// **Layout:** entirely Auto Layout — no `layout()` override, no manual `.frame`/
@@ -15,39 +32,37 @@ enum DiffAction { case stage, unstage, discard }
 final class DiffContentView: NSView {
     private let folder: URL
 
-    private let table = NSTableView()
-    private let textView = NSTextView()
-    private let tableScroll = NSScrollView()
-    private let textScroll = NSScrollView()
-    private let diffQueue = DispatchQueue(label: "agentcanvas.filediff", qos: .userInitiated)
-
-    // Footer (git actions).
-    private let footer = NSView()
-    private let stageAllButton = NSButton()
-    private let discardAllButton = NSButton()
+    // Left column.
+    private let leftColumn = NSView()
     private let messageField = NSTextField()
     private let commitButton = NSButton()
-    private let footerHeight: CGFloat = 40
+    private let outline = NSOutlineView()
+    private let outlineScroll = NSScrollView()
+
+    // Right pane (diff).
+    private let textView = NSTextView()
+    private let textScroll = NSScrollView()
+
+    private let diffQueue = DispatchQueue(label: "agentcanvas.filediff", qos: .userInitiated)
 
     /// Called after any successful mutation so the owner can refresh the snapshot.
     var onMutated: (() -> Void)?
 
-    /// Fraction of the width given to the file list (left pane).
-    private let listFraction: CGFloat = 0.32
+    /// Fraction of the width given to the left (source-control) column.
+    private let listFraction: CGFloat = 0.34
 
+    private var groups: [GroupNode] = []
     private var changes: [GitChange] = []
     private var selectedPath: String?
     private var isRepo = true
-    /// True while we set the selection programmatically, so the selection-change
-    /// delegate doesn't double-render (we render once, explicitly, in `apply`).
-    private var isApplying = false
+    private var isApplying = false   // suppress selection-driven re-render during reload
 
     init(folder: URL) {
         self.folder = folder
         super.init(frame: .zero)
         wantsLayer = true
-        buildPanes()
-        buildFooter()
+        buildLeftColumn()
+        buildDiffPane()
         setupConstraints()
         applyBackground()
     }
@@ -55,27 +70,53 @@ final class DiffContentView: NSView {
 
     // MARK: Build
 
-    private func buildPanes() {
-        // Left: file list.
+    private func buildLeftColumn() {
+        leftColumn.wantsLayer = true
+        leftColumn.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(leftColumn)
+
+        messageField.placeholderString = "Message (⌘↩ to commit)"
+        messageField.font = Theme.fonts.listPath
+        messageField.bezelStyle = .roundedBezel
+        messageField.focusRingType = .none
+        messageField.delegate = self
+        messageField.translatesAutoresizingMaskIntoConstraints = false
+        leftColumn.addSubview(messageField)
+
+        commitButton.title = "Commit"
+        commitButton.image = sfSymbol("checkmark", size: 11, weight: .semibold)
+        commitButton.imagePosition = .imageLeading
+        commitButton.bezelStyle = .rounded
+        commitButton.keyEquivalent = "\r"
+        commitButton.keyEquivalentModifierMask = .command
+        commitButton.target = self
+        commitButton.action = #selector(commitTapped)
+        commitButton.translatesAutoresizingMaskIntoConstraints = false
+        leftColumn.addSubview(commitButton)
+        updateCommitEnablement()   // sets initial enabled/disabled styling
+
+        outline.headerView = nil
+        outline.backgroundColor = Theme.colors.listSurface
+        outline.rowHeight = 26
+        outline.indentationPerLevel = 12
+        outline.autosaveTableColumns = false
+        outline.selectionHighlightStyle = .regular
+        outline.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("file"))
         col.resizingMask = .autoresizingMask
-        table.addTableColumn(col)
-        table.headerView = nil
-        table.backgroundColor = Theme.colors.listSurface
-        table.rowHeight = 30
-        table.intercellSpacing = NSSize(width: 0, height: 2)
-        table.selectionHighlightStyle = .regular
-        table.dataSource = self
-        table.delegate = self
-        tableScroll.documentView = table
-        tableScroll.hasVerticalScroller = true
-        tableScroll.drawsBackground = true
-        tableScroll.backgroundColor = Theme.colors.listSurface
-        tableScroll.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(tableScroll)
+        outline.addTableColumn(col)
+        outline.outlineTableColumn = col
+        outline.dataSource = self
+        outline.delegate = self
+        outlineScroll.documentView = outline
+        outlineScroll.hasVerticalScroller = true
+        outlineScroll.drawsBackground = true
+        outlineScroll.backgroundColor = Theme.colors.listSurface
+        outlineScroll.translatesAutoresizingMaskIntoConstraints = false
+        leftColumn.addSubview(outlineScroll)
+    }
 
-        // Right: diff text. The textView is the scroll view's document — sized by the
-        // scroll view (NOT by our constraints), so it keeps the classic manual setup.
+    private func buildDiffPane() {
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = true
@@ -98,80 +139,39 @@ final class DiffContentView: NSView {
         addSubview(textScroll)
     }
 
-    private func buildFooter() {
-        footer.wantsLayer = true
-        footer.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(footer)
-
-        styleButton(stageAllButton, title: "Stage All", action: #selector(stageAllTapped))
-        styleButton(discardAllButton, title: "Discard All", action: #selector(discardAllTapped))
-        footer.addSubview(stageAllButton)
-        footer.addSubview(discardAllButton)
-
-        messageField.placeholderString = "Commit message"
-        messageField.font = Theme.fonts.listPath
-        messageField.bezelStyle = .roundedBezel
-        messageField.focusRingType = .none
-        messageField.delegate = self
-        messageField.translatesAutoresizingMaskIntoConstraints = false
-        messageField.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        footer.addSubview(messageField)
-
-        styleButton(commitButton, title: "Commit", action: #selector(commitTapped))
-        commitButton.keyEquivalent = "\r"   // Return commits
-        footer.addSubview(commitButton)
-
-        updateFooterEnablement()
-    }
-
-    private func styleButton(_ b: NSButton, title: String, action: Selector) {
-        b.title = title
-        b.bezelStyle = .rounded
-        b.controlSize = .small
-        b.font = Theme.fonts.listStat
-        b.target = self
-        b.action = action
-        b.translatesAutoresizingMaskIntoConstraints = false
-    }
-
     private func setupConstraints() {
         let pad: CGFloat = 8
         NSLayoutConstraint.activate([
-            // Footer pinned to the bottom, fixed height.
-            footer.leadingAnchor.constraint(equalTo: leadingAnchor),
-            footer.trailingAnchor.constraint(equalTo: trailingAnchor),
-            footer.bottomAnchor.constraint(equalTo: bottomAnchor),
-            footer.heightAnchor.constraint(equalToConstant: footerHeight),
+            leftColumn.leadingAnchor.constraint(equalTo: leadingAnchor),
+            leftColumn.topAnchor.constraint(equalTo: topAnchor),
+            leftColumn.bottomAnchor.constraint(equalTo: bottomAnchor),
+            leftColumn.widthAnchor.constraint(equalTo: widthAnchor, multiplier: listFraction),
 
-            // Two panes fill everything above the footer; list takes `listFraction`.
-            tableScroll.leadingAnchor.constraint(equalTo: leadingAnchor),
-            tableScroll.topAnchor.constraint(equalTo: topAnchor),
-            tableScroll.bottomAnchor.constraint(equalTo: footer.topAnchor),
-            tableScroll.widthAnchor.constraint(equalTo: widthAnchor, multiplier: listFraction),
+            messageField.topAnchor.constraint(equalTo: leftColumn.topAnchor, constant: pad),
+            messageField.leadingAnchor.constraint(equalTo: leftColumn.leadingAnchor, constant: pad),
+            messageField.trailingAnchor.constraint(equalTo: leftColumn.trailingAnchor, constant: -pad),
 
-            textScroll.leadingAnchor.constraint(equalTo: tableScroll.trailingAnchor, constant: 1),
+            commitButton.topAnchor.constraint(equalTo: messageField.bottomAnchor, constant: 6),
+            commitButton.leadingAnchor.constraint(equalTo: leftColumn.leadingAnchor, constant: pad),
+            commitButton.trailingAnchor.constraint(equalTo: leftColumn.trailingAnchor, constant: -pad),
+            commitButton.heightAnchor.constraint(equalToConstant: 28),
+
+            outlineScroll.topAnchor.constraint(equalTo: commitButton.bottomAnchor, constant: 8),
+            outlineScroll.leadingAnchor.constraint(equalTo: leftColumn.leadingAnchor),
+            outlineScroll.trailingAnchor.constraint(equalTo: leftColumn.trailingAnchor),
+            outlineScroll.bottomAnchor.constraint(equalTo: leftColumn.bottomAnchor),
+
+            textScroll.leadingAnchor.constraint(equalTo: leftColumn.trailingAnchor, constant: 1),
             textScroll.trailingAnchor.constraint(equalTo: trailingAnchor),
             textScroll.topAnchor.constraint(equalTo: topAnchor),
-            textScroll.bottomAnchor.constraint(equalTo: footer.topAnchor),
-
-            // Footer controls: bulk on the left, commit on the right, message fills the middle.
-            stageAllButton.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: pad),
-            stageAllButton.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
-            discardAllButton.leadingAnchor.constraint(equalTo: stageAllButton.trailingAnchor, constant: 6),
-            discardAllButton.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
-            commitButton.trailingAnchor.constraint(equalTo: footer.trailingAnchor, constant: -pad),
-            commitButton.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
-            messageField.leadingAnchor.constraint(equalTo: discardAllButton.trailingAnchor, constant: 12),
-            messageField.trailingAnchor.constraint(equalTo: commitButton.leadingAnchor, constant: -8),
-            messageField.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
+            textScroll.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
     }
 
-    /// The view's own layer background is a frozen `.cgColor`, so re-resolve it when
-    /// the appearance flips. (The scroll/text/table backgrounds are `NSColor` and adapt.)
+    /// Layer `.cgColor`s don't auto-adapt, so re-resolve on appearance flips.
     private func applyBackground() {
         layer?.backgroundColor = Theme.colors.contentSurface.cgColor
-        footer.layer?.backgroundColor = Theme.colors.titleBar.cgColor
+        leftColumn.layer?.backgroundColor = Theme.colors.listSurface.cgColor
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -181,22 +181,46 @@ final class DiffContentView: NSView {
 
     // MARK: Update
 
-    /// Apply a new snapshot: refresh the list, keep the current selection if it
-    /// still exists (else select the first file), and render its diff.
+    /// Apply a new snapshot: rebuild the Staged/Changes groups, keep the current
+    /// selection if its file still exists (else select the first), render its diff.
     func apply(_ snapshot: GitSnapshot) {
         isRepo = snapshot.isRepo
         changes = snapshot.changes
-        table.reloadData()
-        updateFooterEnablement()
+
+        let staged = GroupNode(.staged, "Staged Changes")
+        staged.files = changes.filter { $0.hasStaged }.map { FileNode($0, .staged) }
+        let unstaged = GroupNode(.unstaged, "Changes")
+        unstaged.files = changes.filter { $0.hasUnstaged }.map { FileNode($0, .unstaged) }
+        groups = [staged, unstaged].filter { !$0.files.isEmpty }
+
+        isApplying = true
+        outline.reloadData()
+        groups.forEach { outline.expandItem($0) }
+        isApplying = false
+
+        updateCommitEnablement()
 
         guard isRepo else { showMessage("Not a git repository."); return }
-        guard !changes.isEmpty else { selectedPath = nil; showMessage("No changes — clean working tree."); return }
+        guard !groups.isEmpty else { selectedPath = nil; showMessage("No changes — clean working tree."); return }
 
-        let keep = selectedPath.flatMap { p in changes.firstIndex { $0.path == p } } ?? 0
-        isApplying = true
-        table.selectRowIndexes(IndexSet(integer: keep), byExtendingSelection: false)
-        isApplying = false
-        renderDiff(for: changes[keep])   // single, explicit render (the delegate stays quiet)
+        // Re-select the previously selected file if still present, else the first file.
+        let target = firstFileRow(matching: selectedPath) ?? firstFileRow(matching: nil)
+        if let (node, rowItem) = target {
+            isApplying = true
+            outline.selectRowIndexes(IndexSet(integer: outline.row(forItem: rowItem)), byExtendingSelection: false)
+            isApplying = false
+            renderDiff(for: node.change)
+        }
+    }
+
+    /// Find a FileNode (and the item to select) whose path matches, or the first file.
+    private func firstFileRow(matching path: String?) -> (FileNode, Any)? {
+        for g in groups {
+            for f in g.files where path == nil || f.change.path == path {
+                return (f, f)
+            }
+        }
+        return nil
     }
 
     private func showMessage(_ text: String) {
@@ -246,12 +270,13 @@ final class DiffContentView: NSView {
     // MARK: Actions
 
     private var anyStaged: Bool { changes.contains { $0.hasStaged } }
-    private var anyUnstaged: Bool { changes.contains { $0.hasUnstaged } }
 
-    private func updateFooterEnablement() {
-        stageAllButton.isEnabled = anyUnstaged
-        discardAllButton.isEnabled = !changes.isEmpty
-        commitButton.isEnabled = anyStaged && !messageField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    private func updateCommitEnablement() {
+        let hasMsg = !messageField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let enabled = anyStaged && hasMsg
+        commitButton.isEnabled = enabled
+        commitButton.bezelColor = enabled ? .controlAccentColor : Theme.colors.commitIdle
+        commitButton.contentTintColor = enabled ? .white : Theme.colors.textMuted
     }
 
     /// Per-file action from a row's hover button. Destructive (discard) is confirmed first.
@@ -270,20 +295,20 @@ final class DiffContentView: NSView {
         }
     }
 
-    @objc private func stageAllTapped() {
+    fileprivate func performBulk(_ action: DiffBulkAction) {
         let folder = self.folder
-        runMutation { GitActions.stageAll(folder: folder) }
-    }
-
-    @objc private func discardAllTapped() {
-        let folder = self.folder
-        let files = changes.count
-        let untracked = changes.filter { $0.status == .untracked }.count
-        var body = "This will revert all \(files) changed file\(files == 1 ? "" : "s") to the last commit"
-        if untracked > 0 { body += " and permanently remove \(untracked) untracked file\(untracked == 1 ? "" : "s")" }
-        body += ". This cannot be undone."
-        confirm(title: "Discard ALL changes?", body: body, confirmTitle: "Discard All") { [weak self] in
-            self?.runMutation { GitActions.discardAll(folder: folder) }
+        switch action {
+        case .stageAll:   runMutation { GitActions.stageAll(folder: folder) }
+        case .unstageAll: runMutation { GitActions.unstageAll(folder: folder) }
+        case .discardAll:
+            let files = changes.count
+            let untracked = changes.filter { $0.status == .untracked }.count
+            var body = "This will revert all \(files) changed file\(files == 1 ? "" : "s") to the last commit"
+            if untracked > 0 { body += " and permanently remove \(untracked) untracked file\(untracked == 1 ? "" : "s")" }
+            body += ". This cannot be undone."
+            confirm(title: "Discard ALL changes?", body: body, confirmTitle: "Discard All") { [weak self] in
+                self?.runMutation { GitActions.discardAll(folder: folder) }
+            }
         }
     }
 
@@ -291,7 +316,7 @@ final class DiffContentView: NSView {
         let message = messageField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty, anyStaged else { return }
         let folder = self.folder
-        runMutation(onSuccess: { [weak self] in self?.messageField.stringValue = ""; self?.updateFooterEnablement() }) {
+        runMutation(onSuccess: { [weak self] in self?.messageField.stringValue = ""; self?.updateCommitEnablement() }) {
             GitActions.commit(folder: folder, message: message)
         }
     }
@@ -342,150 +367,307 @@ final class DiffContentView: NSView {
 // MARK: - Live commit-button enablement
 
 extension DiffContentView: NSTextFieldDelegate {
-    func controlTextDidChange(_ obj: Notification) { updateFooterEnablement() }
+    func controlTextDidChange(_ obj: Notification) { updateCommitEnablement() }
 }
 
-// MARK: - File list
+// MARK: - Outline (Staged / Changes groups + file rows)
 
-extension DiffContentView: NSTableViewDataSource, NSTableViewDelegate {
-    func numberOfRows(in tableView: NSTableView) -> Int { changes.count }
+extension DiffContentView: NSOutlineViewDataSource, NSOutlineViewDelegate {
+    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+        if item == nil { return groups.count }
+        return (item as? GroupNode)?.files.count ?? 0
+    }
+    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        if let group = item as? GroupNode { return group.files[index] }
+        return groups[index]
+    }
+    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+        item is GroupNode
+    }
+    func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
+        item is FileNode
+    }
 
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+        if let group = item as? GroupNode {
+            let id = NSUserInterfaceItemIdentifier("DiffGroupCell")
+            let cell = (outlineView.makeView(withIdentifier: id, owner: self) as? DiffGroupCell) ?? DiffGroupCell(id: id)
+            cell.onBulk = { [weak self] action in self?.performBulk(action) }
+            cell.configure(group)
+            return cell
+        }
+        let node = item as! FileNode
         let id = NSUserInterfaceItemIdentifier("DiffFileCell")
-        let cell = (tableView.makeView(withIdentifier: id, owner: self) as? DiffFileCell) ?? DiffFileCell(id: id)
+        let cell = (outlineView.makeView(withIdentifier: id, owner: self) as? DiffFileCell) ?? DiffFileCell(id: id)
         cell.onAction = { [weak self] action, change in self?.perform(action, on: change) }
-        cell.configure(with: changes[row])
+        cell.configure(node)
         return cell
     }
 
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        guard !isApplying else { return }   // programmatic selection renders itself
-        let row = table.selectedRow
-        guard row >= 0, row < changes.count else { return }
-        renderDiff(for: changes[row])
+    func outlineViewSelectionDidChange(_ notification: Notification) {
+        guard !isApplying else { return }
+        if let node = outline.item(atRow: outline.selectedRow) as? FileNode {
+            renderDiff(for: node.change)
+        }
     }
 }
 
-/// One row in the changed-file list: a status-colored dot, the path, and `+A −R`.
-/// On hover the stat is replaced by Stage/Unstage + Discard buttons. Pure Auto
-/// Layout via an `NSStackView` — hidden arranged subviews collapse, so show/hide
-/// needs no manual frame work (which is what caused the layout-loop crashes).
-private final class DiffFileCell: NSTableCellView {
-    private let dot = NSView()
-    private let pathLabel = NSTextField(labelWithString: "")
-    private let statLabel = NSTextField(labelWithString: "")
-    private let stageButton = NSButton()
-    private let discardButton = NSButton()
-    private var dotColor: NSColor = .clear   // remembered to re-resolve on appearance flip
+// MARK: - Group header cell
+
+private final class DiffGroupCell: NSTableCellView {
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let badge = BadgeView()
+    private let stageAllButton = IconButton(symbol: "plus")
+    private let unstageAllButton = IconButton(symbol: "minus")
+    private let discardAllButton = IconButton(symbol: "arrow.uturn.backward")
     private var trackingArea: NSTrackingArea?
     private var hovering = false
+    private var side: DiffSide = .unstaged
 
-    private var change: GitChange?
-    /// Set by the table; the cell reports which action the user invoked on its change.
-    var onAction: ((DiffAction, GitChange) -> Void)?
+    var onBulk: ((DiffBulkAction) -> Void)?
 
     init(id: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         identifier = id
-        dot.wantsLayer = true
-        dot.layer?.cornerRadius = 4
-        dot.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        titleLabel.textColor = Theme.colors.groupHeader
+        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        pathLabel.lineBreakMode = .byTruncatingMiddle
-        pathLabel.font = Theme.fonts.listPath
-        pathLabel.textColor = Theme.colors.textPrimary
-        pathLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        stageAllButton.onClick = { [weak self] in self?.onBulk?(.stageAll) }
+        unstageAllButton.onClick = { [weak self] in self?.onBulk?(.unstageAll) }
+        discardAllButton.onClick = { [weak self] in self?.onBulk?(.discardAll) }
 
-        statLabel.font = Theme.fonts.listStat
-        statLabel.alignment = .right
-        statLabel.setContentHuggingPriority(.required, for: .horizontal)
-
-        styleAction(stageButton, action: #selector(stageTapped))
-        styleAction(discardButton, action: #selector(discardTapped))
-
-        let row = NSStackView(views: [dot, pathLabel, statLabel, stageButton, discardButton])
+        let row = NSStackView(views: [titleLabel, stageAllButton, unstageAllButton, discardAllButton, badge])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 6
+        row.distribution = .fill   // title takes the slack → badge/actions sit at the right edge
+        row.spacing = 4
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
-
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor),
             row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             row.centerYAnchor.constraint(equalTo: centerYAnchor),
-            dot.widthAnchor.constraint(equalToConstant: 8),
-            dot.heightAnchor.constraint(equalToConstant: 8),
         ])
-        setHoverState()
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    private func styleAction(_ b: NSButton, action: Selector) {
-        b.bezelStyle = .rounded
-        b.controlSize = .mini
-        b.font = Theme.fonts.listStat
-        b.target = self
-        b.action = action
-        b.translatesAutoresizingMaskIntoConstraints = false
-        b.setContentHuggingPriority(.required, for: .horizontal)
-    }
-
-    func configure(with change: GitChange) {
-        self.change = change
-        dotColor = change.status.color
-        dot.layer?.backgroundColor = dotColor.cgColor
-        let name = change.oldPath.map { "\($0) → \(change.path)" } ?? change.path
-        pathLabel.stringValue = name
-        let stat = NSMutableAttributedString()
-        if change.added > 0 {
-            stat.append(NSAttributedString(string: "+\(change.added) ", attributes: [.foregroundColor: Theme.colors.diffAdded]))
-        }
-        if change.removed > 0 {
-            stat.append(NSAttributedString(string: "−\(change.removed)", attributes: [.foregroundColor: Theme.colors.diffRemoved]))
-        }
-        statLabel.attributedStringValue = stat
-        // Stage button reflects state: stage if there are unstaged changes, else unstage.
-        stageButton.title = change.hasUnstaged ? "Stage" : "Unstage"
-        discardButton.title = "Discard"
+    func configure(_ group: GroupNode) {
+        side = group.side
+        titleLabel.stringValue = group.title.uppercased()
+        badge.count = group.files.count
         setHoverState()
     }
-
-    @objc private func stageTapped() {
-        guard let change else { return }
-        onAction?(change.hasUnstaged ? .stage : .unstage, change)
-    }
-    @objc private func discardTapped() {
-        guard let change else { return }
-        onAction?(.discard, change)
-    }
-
-    // MARK: Hover
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let trackingArea { removeTrackingArea(trackingArea) }
         let ta = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
                                 owner: self, userInfo: nil)
-        addTrackingArea(ta)
-        trackingArea = ta
+        addTrackingArea(ta); trackingArea = ta
     }
     override func mouseEntered(with event: NSEvent) { hovering = true; setHoverState() }
     override func mouseExited(with event: NSEvent) { hovering = false; setHoverState() }
 
-    /// Toggle visibility only — the stack view collapses hidden arranged subviews and
-    /// relays out itself. No `needsLayout`, no frame math.
     private func setHoverState() {
-        statLabel.isHidden = hovering
-        stageButton.isHidden = !hovering
-        discardButton.isHidden = !hovering
+        // Staged group → unstage-all; Changes group → stage-all + discard-all.
+        stageAllButton.isHidden = !(hovering && side == .unstaged)
+        discardAllButton.isHidden = !(hovering && side == .unstaged)
+        unstageAllButton.isHidden = !(hovering && side == .staged)
+    }
+}
+
+// MARK: - File row cell
+
+private final class DiffFileCell: NSTableCellView {
+    private let icon = NSImageView()
+    private let nameLabel = NSTextField(labelWithString: "")
+    private let letterLabel = NSTextField(labelWithString: "")
+    private let primaryButton = IconButton(symbol: "plus")          // Stage (+) or Unstage (−), by side
+    private let discardButton = IconButton(symbol: "arrow.uturn.backward")  // unstaged side only
+    private var trackingArea: NSTrackingArea?
+    private var hovering = false
+
+    private var change: GitChange?
+    private var side: DiffSide = .unstaged
+    var onAction: ((DiffAction, GitChange) -> Void)?
+
+    init(id: NSUserInterfaceItemIdentifier) {
+        super.init(frame: .zero)
+        identifier = id
+        icon.image = sfSymbol("doc.text", size: 13)
+        icon.contentTintColor = Theme.colors.textMuted
+        icon.imageScaling = .scaleNone
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        nameLabel.lineBreakMode = .byTruncatingMiddle
+        nameLabel.font = Theme.fonts.listPath
+        nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        letterLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        letterLabel.alignment = .center
+
+        primaryButton.onClick = { [weak self] in
+            guard let self, let c = self.change else { return }
+            self.onAction?(self.side == .staged ? .unstage : .stage, c)
+        }
+        discardButton.onClick = { [weak self] in
+            guard let self, let c = self.change else { return }
+            self.onAction?(.discard, c)
+        }
+
+        let row = NSStackView(views: [icon, nameLabel, primaryButton, discardButton, letterLabel])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.distribution = .fill   // name takes the slack → letter/actions sit at the right edge
+        row.spacing = 5
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            row.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 16),
+            letterLabel.widthAnchor.constraint(equalToConstant: 14),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(_ node: FileNode) {
+        change = node.change
+        side = node.side
+        let c = node.change
+        // Name: basename in primary color, parent dir muted (VS Code style).
+        let full = c.path as NSString
+        let base = full.lastPathComponent
+        let dir = full.deletingLastPathComponent
+        let name = NSMutableAttributedString(string: base, attributes: [.foregroundColor: Theme.colors.textPrimary])
+        if !dir.isEmpty {
+            name.append(NSAttributedString(string: "  \(dir)", attributes: [
+                .foregroundColor: Theme.colors.textMuted,
+                .font: NSFont.systemFont(ofSize: 10),
+            ]))
+        }
+        nameLabel.attributedStringValue = name
+
+        let status = (side == .staged ? c.stagedStatus : c.unstagedStatus) ?? c.status
+        letterLabel.stringValue = status.letter
+        letterLabel.textColor = status.color
+        icon.contentTintColor = Theme.colors.textMuted
+
+        // Actions per side: unstaged → Stage(+) & Discard(↩); staged → Unstage(−).
+        primaryButton.setSymbol(side == .staged ? "minus" : "plus")
+        setHoverState()
     }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let ta = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                                owner: self, userInfo: nil)
+        addTrackingArea(ta); trackingArea = ta
+    }
+    override func mouseEntered(with event: NSEvent) { hovering = true; setHoverState() }
+    override func mouseExited(with event: NSEvent) { hovering = false; setHoverState() }
+
+    private func setHoverState() {
+        letterLabel.isHidden = hovering
+        primaryButton.isHidden = !hovering
+        discardButton.isHidden = !(hovering && side == .unstaged)
+    }
+}
+
+// MARK: - Count badge
+
+private final class BadgeView: NSView {
+    private let label = NSTextField(labelWithString: "")
+    var count: Int = 0 { didSet { label.stringValue = "\(count)"; applyColors() } }
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 10, weight: .semibold)
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            widthAnchor.constraint(greaterThanOrEqualToConstant: 16),
+            heightAnchor.constraint(equalToConstant: 16),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 5).priorityHigh(),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -5).priorityHigh(),
+        ])
+        applyColors()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func applyColors() {
+        layer?.backgroundColor = Theme.colors.badgeBackground.cgColor
+        label.textColor = Theme.colors.badgeText
+    }
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            dot.layer?.backgroundColor = dotColor.cgColor
-        }
+        effectiveAppearance.performAsCurrentDrawingAppearance { applyColors() }
+    }
+}
+
+private extension NSLayoutConstraint {
+    func priorityHigh() -> NSLayoutConstraint { priority = .defaultHigh; return self }
+}
+
+/// A borderless icon button built on a plain `NSView`. `NSButton` fights both
+/// explicit sizing (its intrinsic content size conflicts with size constraints) and
+/// layer backgrounds (its cell draws over them), which made the action icons render
+/// at inconsistent sizes with no visible hover state. This view guarantees a fixed
+/// 22×22 frame, a perfectly centered SF Symbol, and a VS Code-style rounded hover
+/// highlight that actually shows.
+private final class IconButton: NSView {
+    private let imageView = NSImageView()
+    private var tracking: NSTrackingArea?
+    var onClick: (() -> Void)?
+
+    init(symbol: String) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 4
+        translatesAutoresizingMaskIntoConstraints = false
+        imageView.imageScaling = .scaleNone
+        imageView.contentTintColor = Theme.colors.textControl
+        imageView.image = sfSymbol(symbol)
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(imageView)
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 22),
+            heightAnchor.constraint(equalToConstant: 22),
+            imageView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            imageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func setSymbol(_ name: String) { imageView.image = sfSymbol(name) }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let t = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                               owner: self, userInfo: nil)
+        addTrackingArea(t); tracking = t
+    }
+    override func mouseEntered(with event: NSEvent) { setHovered(true) }
+    override func mouseExited(with event: NSEvent) { setHovered(false) }
+    override func mouseDown(with event: NSEvent) {}   // swallow so we receive mouseUp
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+    }
+
+    private func setHovered(_ on: Bool) {
+        layer?.backgroundColor = (on ? Theme.colors.controlHover : NSColor.clear).cgColor
+        imageView.contentTintColor = on ? Theme.colors.textPrimary : Theme.colors.textControl
     }
 }

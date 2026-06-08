@@ -41,6 +41,14 @@ extension Theme {
         let textPrimary      = dynamic(dark: 0.90, light: 0.15)  // titles, file paths
         let textControl      = dynamic(dark: 0.75, light: 0.35)  // glyph buttons (✕)
         let textMuted        = dynamic(dark: 0.55, light: 0.45)  // placeholders, hints, empty states
+        let groupHeader      = dynamic(dark: 0.68, light: 0.40)  // "Staged Changes" / "Changes" labels
+        let badgeBackground  = dynamic(dark: 0.28, light: 0.80)  // count-pill background
+        let badgeText        = dynamic(dark: 0.90, light: 0.20)  // count-pill text
+        let commitIdle       = dynamic(dark: 0.26, light: 0.80)  // commit button when disabled
+        let controlHover     = NSColor(name: nil) { a in         // icon-button hover highlight (alpha)
+            a.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? NSColor(calibratedWhite: 1, alpha: 0.14)
+                                                               : NSColor(calibratedWhite: 0, alpha: 0.09)
+        }
 
         // Item accent border (status color belongs to cards; diffs use neutral)
         let neutralBorder    = dynamic(dark: 0.40, light: 0.65)
@@ -59,11 +67,17 @@ extension Theme {
         let diffMeta     = dynamic(dark: 0.45, light: 0.55)      // file/index headers
         let diffText     = dynamic(dark: 0.82, light: 0.22)      // unchanged context lines
 
-        // Changed-file status dots
-        let fileAdded:    NSColor = .systemGreen
-        let fileModified: NSColor = .systemYellow
-        let fileDeleted:  NSColor = .systemRed
-        let fileRenamed:  NSColor = .systemBlue
+        // Changed-file status letters. Tuned per-appearance for contrast: bright on
+        // the dark list, darker/saturated on the light list (system hues — esp.
+        // yellow — wash out on a near-white background).
+        let fileAdded    = dynamicRGB(dark: .init(srgbRed: 0.36, green: 0.78, blue: 0.45, alpha: 1),
+                                      light: .init(srgbRed: 0.13, green: 0.52, blue: 0.20, alpha: 1))
+        let fileModified = dynamicRGB(dark: .init(srgbRed: 0.90, green: 0.71, blue: 0.22, alpha: 1),
+                                      light: .init(srgbRed: 0.60, green: 0.42, blue: 0.00, alpha: 1))
+        let fileDeleted  = dynamicRGB(dark: .init(srgbRed: 0.93, green: 0.38, blue: 0.36, alpha: 1),
+                                      light: .init(srgbRed: 0.74, green: 0.12, blue: 0.12, alpha: 1))
+        let fileRenamed  = dynamicRGB(dark: .init(srgbRed: 0.40, green: 0.66, blue: 1.00, alpha: 1),
+                                      light: .init(srgbRed: 0.10, green: 0.38, blue: 0.80, alpha: 1))
     }
 }
 
@@ -90,6 +104,14 @@ extension Theme {
 private func dynamic(dark: CGFloat, light: CGFloat) -> NSColor {
     NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .gray(dark) : .gray(light)
+    }
+}
+
+/// A color that resolves to `dark` in a dark appearance and `light` otherwise — for
+/// hues that need different values per mode to keep contrast (e.g. status letters).
+private func dynamicRGB(dark: NSColor, light: NSColor) -> NSColor {
+    NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
     }
 }
 
