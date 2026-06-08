@@ -37,6 +37,7 @@ final class DiffObject: CanvasItem {
         // Calm, neutral accent + no bead — status colors belong to agent cards, not diffs.
         containerView.setBead(visible: false)
         containerView.setAccent(color: Theme.colors.neutralBorder, glow: .none)
+        containerView.enableResize(minSize: CanvasLayout.minItemSize)
 
         watcher.onChange = { [weak self] snapshot in
             guard let self else { return }

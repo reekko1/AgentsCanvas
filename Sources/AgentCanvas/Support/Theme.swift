@@ -14,7 +14,7 @@ import AppKit
 /// `backgroundColor`, fills in `draw(_:)`). Pushed into a layer as `.cgColor` they
 /// freeze to the appearance at assignment time — those views must re-apply on
 /// `viewDidChangeEffectiveAppearance()`. See `ItemContainerView`, `DiffContentView`,
-/// `GridBackdropView`, and the diff file-list cell.
+/// `VideoBackdropView`, and the diff file-list cell.
 ///
 /// - **Design tokens** are the canonical names (`itemBody`, `glyph`, `primary`…).
 /// - **Legacy aliases** (`itemChrome`, `titleBar`, `textControl`…) are kept as
@@ -32,8 +32,7 @@ enum Theme {
 extension Theme {
     struct Palette {
         // ---- Surfaces ----
-        let canvasBackground = dyn(d: (0.0759, 0.0648, 0.1110), l: (0.9341, 0.9129, 0.8756))
-        let canvasWarm       = dyn(d: (0.1440, 0.0854, 0.1384), l: (0.9940, 0.9462, 0.8941)) // centre vignette glow
+        let canvasBackground = dyn(d: (0.0759, 0.0648, 0.1110), l: (0.9341, 0.9129, 0.8756)) // shown under the video backdrop until the first frame decodes
         let itemBody         = dyn(d: (0.1259, 0.1206, 0.1662), l: (0.9886, 0.9794, 0.9632))
         let itemBar          = dyn(d: (0.1635, 0.1569, 0.2129), l: (0.9588, 0.9391, 0.9042))
         let terminalBg       = dyn(d: (0.0459, 0.0425, 0.0795), l: (0.0883, 0.0848, 0.1284)) // stays dark in light mode
@@ -50,7 +49,6 @@ extension Theme {
         let borderSoft       = dyn(d: (0.1781, 0.1735, 0.2171), l: (0.8860, 0.8681, 0.8364))
         let hover            = dyn(d: (0.1877, 0.1812, 0.2384), l: (0.9081, 0.8871, 0.8499))
         let selection        = dyn(d: (0.2092, 0.2064, 0.3077), l: (0.8586, 0.8601, 0.9609))
-        let gridDot          = dyn(d: (0.1781, 0.1735, 0.2171), l: (0.8425, 0.8232, 0.7892))
 
         // ---- Agent status (cool+quiet calm / warm+bright loud) ----
         let statusIdle       = dyn(d: (0.5000, 0.4929, 0.5657), l: (0.5705, 0.5640, 0.6333))
@@ -102,6 +100,11 @@ extension Theme {
         var badgeText:       NSColor { textMuted }
         var commitIdle:      NSColor { primaryDisabled }
         var neutralBorder:   NSColor { border }
+
+        // ---- Resize grip (the thick bottom-right corner bracket) ----
+        // One neutral color; the grip varies by *opacity* only (faint on card-hover,
+        // full on grip-hover), never by hue — no blue "active" state.
+        var resizeGrip: NSColor { glyph }
     }
 }
 

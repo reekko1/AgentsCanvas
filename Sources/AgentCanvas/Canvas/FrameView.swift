@@ -7,7 +7,14 @@ import AppKit
 final class FrameView: NSView {
     override var isFlipped: Bool { true }
 
+    private static let cornerRadius: CGFloat = 22
+
     let label = FrameLabelView()
+    private let resizeHandles = ResizeHandlesView(edges: [.bottomRight], minSize: CanvasLayout.minFrameSize,
+                                                  cornerRadius: FrameView.cornerRadius)
+
+    /// Fired when a resize gesture commits, carrying the frame's new rect.
+    var onResized: ((NSRect) -> Void)?
 
     init() {
         super.init(frame: .zero)
@@ -19,20 +26,31 @@ final class FrameView: NSView {
             label.topAnchor.constraint(equalTo: topAnchor, constant: 16),
         ])
         label.movableFrame = self
+
+        resizeHandles.onCommit = { [weak self] rect in self?.onResized?(rect) }
+        addSubview(resizeHandles)
+        NSLayoutConstraint.activate([
+            resizeHandles.topAnchor.constraint(equalTo: topAnchor),
+            resizeHandles.leadingAnchor.constraint(equalTo: leadingAnchor),
+            resizeHandles.trailingAnchor.constraint(equalTo: trailingAnchor),
+            resizeHandles.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
     }
     required init?(coder: NSCoder) { fatalError() }
 
     func configure(name: String) { label.setName(name) }
     func update(count: Int, loud: NSColor?) { label.update(count: count, loud: loud) }
 
-    /// Only the label chip is interactive; clicks on the body fall through.
+    /// Corner handles win at the edges, then the label chip; the body falls through.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        label.hitTest(convert(point, from: superview))
+        let inSelf = convert(point, from: superview)
+        if let handle = resizeHandles.hitTest(inSelf) { return handle }
+        return label.hitTest(inSelf)
     }
 
     override func draw(_ dirtyRect: NSRect) {
         let inset = bounds.insetBy(dx: 1, dy: 1)
-        let path = NSBezierPath(roundedRect: inset, xRadius: 22, yRadius: 22)
+        let path = NSBezierPath(roundedRect: inset, xRadius: Self.cornerRadius, yRadius: Self.cornerRadius)
         Theme.colors.textPrimary.withAlphaComponent(0.03).setFill()
         path.fill()
         path.lineWidth = 1.5

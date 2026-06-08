@@ -12,7 +12,9 @@ let package = Package(
             name: "AgentCanvas",
             dependencies: ["SwiftTerm"],
             resources: [
-                .copy("Resources/Fonts")
+                .copy("Resources/Fonts"),
+                .copy("Resources/backdrop-dark.mp4"),
+                .copy("Resources/backdrop-light.mp4")
             ]
         )
     ]

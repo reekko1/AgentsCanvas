@@ -52,6 +52,10 @@ final class ItemContainerView: NSView {
 
     var onMoved: ((NSPoint) -> Void)?
     var onDelete: (() -> Void)?
+    /// Fired when a resize gesture commits (mouse-up), carrying the new outer frame.
+    /// Nil until `enableResize` is called. The controller wires it like `onMoved`.
+    var onResized: ((NSRect) -> Void)?
+    private var resizeHandles: ResizeHandlesView?
 
     // Remembered accent so it can be re-resolved on appearance flips (layer colors
     // are frozen `.cgColor`s — see Theme.swift).
@@ -152,6 +156,27 @@ final class ItemContainerView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     @objc private func deleteTapped() { onDelete?() }
+
+    // MARK: Resize
+
+    /// Opt this item into resizing: install handles that drag the outer frame and
+    /// report the committed frame via `onResized`. Call once from the item's init
+    /// (cards + diffs do). The overlay sits *above* the clip so its handles are
+    /// hittable over the body corners, and passes every other hit straight through
+    /// to the title bar / content beneath. Idempotent.
+    func enableResize(edges: [ResizeEdges] = [.bottomRight], minSize: NSSize) {
+        guard resizeHandles == nil else { return }
+        let r = ResizeHandlesView(edges: edges, minSize: minSize, cornerRadius: cornerRadius)
+        r.onCommit = { [weak self] frame in self?.onResized?(frame) }
+        addSubview(r)
+        NSLayoutConstraint.activate([
+            r.topAnchor.constraint(equalTo: topAnchor),
+            r.leadingAnchor.constraint(equalTo: leadingAnchor),
+            r.trailingAnchor.constraint(equalTo: trailingAnchor),
+            r.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        resizeHandles = r
+    }
 
     // MARK: Content
 

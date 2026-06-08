@@ -8,7 +8,7 @@ final class CanvasViewController: NSViewController {
 
     private var scrollView: NSScrollView!
     private var documentView: DocumentView!
-    private var backdrop: GridBackdropView!
+    private var backdrop: VideoBackdropView!
     private var emptyView: EmptyStateView!
 
     private var viewport: Viewport!
@@ -35,7 +35,6 @@ final class CanvasViewController: NSViewController {
         viewport = Viewport(scrollView: scrollView)
         viewport.onChange = { [weak self] in
             guard let self else { return }
-            self.updateBackdrop()
             self.updateItemDetail()
             self.zoomHUD?.setLevel(self.scrollView.magnification)
         }
@@ -67,7 +66,6 @@ final class CanvasViewController: NSViewController {
         } else {
             viewport.fitAll(contentBounds: store.bounds, animated: false)
         }
-        updateBackdrop()
         updateItemDetail()
         zoomHUD.setLevel(scrollView.magnification)
         refreshActivity()
@@ -86,7 +84,7 @@ final class CanvasViewController: NSViewController {
 
     // MARK: View tree
     private func buildViewTree() {
-        backdrop = GridBackdropView(frame: view.bounds)
+        backdrop = VideoBackdropView(frame: view.bounds)
         backdrop.autoresizingMask = [.width, .height]
         view.addSubview(backdrop)
 
@@ -171,12 +169,6 @@ final class CanvasViewController: NSViewController {
         if let item = store.items.first(where: { $0.id == id }) { frame(item) }
     }
 
-    private func updateBackdrop() {
-        guard backdrop != nil else { return }
-        backdrop.offset = scrollView.contentView.bounds.origin
-        backdrop.scale = scrollView.magnification
-    }
-
     /// Diff objects swap to their full two-pane tool once big enough on screen,
     /// and to a compact file list when far (the decided LOD for diffs).
     private func updateItemDetail() {
@@ -194,6 +186,14 @@ final class CanvasViewController: NSViewController {
             item.frame.origin = origin
             self.viewport.updateLimits(contentBounds: self.store.bounds)
             self.refreshFrames()   // a card moving in/out of a frame changes membership
+            self.saveWorkspace()
+        }
+        item.containerView.onResized = { [weak self, weak item] frame in
+            guard let self, let item else { return }
+            item.frame = frame
+            self.viewport.updateLimits(contentBounds: self.store.bounds)
+            self.refreshFrames()        // resizing moves the item's center → membership can change
+            self.updateItemDetail()     // a diff may cross the LOD threshold at its new size
             self.saveWorkspace()
         }
         item.containerView.onDelete = { [weak self, weak item] in
@@ -439,6 +439,12 @@ final class CanvasViewController: NSViewController {
             guard let self, let f else { return }
             f.rect.origin = origin
             self.refreshFrames()
+            self.saveWorkspace()
+        }
+        f.view.onResized = { [weak self, weak f] rect in
+            guard let self, let f else { return }
+            f.rect = rect
+            self.refreshFrames()        // growing/shrinking the frame changes which cards are inside
             self.saveWorkspace()
         }
         f.view.label.onDelete = { [weak self, weak f] in

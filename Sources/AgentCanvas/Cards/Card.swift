@@ -33,6 +33,7 @@ final class Card: CanvasItem {
         containerView.contentInset = CanvasLayout.terminalPadding    // breathing room for the CLI
         containerView.configureTitle(dir: Self.dirPrefix(for: folder), name: title)
         containerView.setPlaceholder(role == .shell ? "tap to open shell" : "tap to start")
+        containerView.enableResize(minSize: CanvasLayout.minItemSize)
         applyVisual(status)
     }
 
