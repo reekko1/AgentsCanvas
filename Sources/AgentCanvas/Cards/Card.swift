@@ -12,6 +12,7 @@ final class Card: CanvasItem {
     private(set) var status: CardStatus = .idle
     var terminal: LocalProcessTerminalView?
     let containerView: ItemContainerView
+    let kind = "card"
 
     init(id: String, title: String, frame: NSRect, folder: URL) {
         self.id = id
@@ -30,5 +31,11 @@ final class Card: CanvasItem {
         status = newStatus
         containerView.setAccent(color: newStatus.color, loud: newStatus.isLoud)
         canvasLog("\(title): \(newStatus)")
+    }
+
+    func record() -> Workspace.Item {
+        Workspace.Item(kind: kind, id: id, title: title,
+                       x: frame.minX, y: frame.minY, w: frame.width, h: frame.height,
+                       folder: folder.path)
     }
 }

@@ -8,4 +8,10 @@ protocol CanvasItem: AnyObject {
     var id: String { get }
     var frame: NSRect { get set }
     var containerView: ItemContainerView { get }
+    /// Discriminator used by persistence (`"card"`, `"diff"`, …) and the
+    /// controller when restoring a workspace.
+    var kind: String { get }
+    /// Self-serialize to a persisted record. Each item kind decides which
+    /// `Workspace.Item` fields it fills (e.g. `folder`).
+    func record() -> Workspace.Item
 }

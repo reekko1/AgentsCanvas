@@ -7,11 +7,11 @@ enum CardStatus {
 
     var color: NSColor {
         switch self {
-        case .idle:    return NSColor(calibratedWhite: 0.50, alpha: 1)
-        case .running: return NSColor.systemBlue
-        case .blocked: return NSColor.systemRed
-        case .done:    return NSColor.systemGreen
-        case .error:   return NSColor.systemOrange
+        case .idle:    return Theme.colors.statusIdle
+        case .running: return Theme.colors.statusRunning
+        case .blocked: return Theme.colors.statusBlocked
+        case .done:    return Theme.colors.statusDone
+        case .error:   return Theme.colors.statusError
         }
     }
 

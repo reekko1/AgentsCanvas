@@ -12,8 +12,9 @@ final class CanvasViewController: NSViewController {
     private var hintLabel: NSTextField!
 
     private var viewport: Viewport!
-    private let store = CardStore()
+    private let store = ItemStore()
     private let spine = Spine()
+    private let toolbar = CanvasToolbar()
 
     private var savedViewport: (center: NSPoint, mag: CGFloat)?
     private var keyMonitor: Any?
@@ -37,6 +38,7 @@ final class CanvasViewController: NSViewController {
 
     override func viewDidAppear() {
         super.viewDidAppear()
+        installToolbar()
         viewport.updateLimits(contentBounds: store.bounds)
         if let v = savedViewport {
             let m = max(scrollView.minMagnification, min(scrollView.maxMagnification, v.mag))
@@ -81,8 +83,8 @@ final class CanvasViewController: NSViewController {
         view.addSubview(scrollView)
 
         hintLabel = NSTextField(labelWithString: "Press  N  to add an agent")
-        hintLabel.font = NSFont.systemFont(ofSize: 22, weight: .medium)
-        hintLabel.textColor = NSColor(calibratedWhite: 0.5, alpha: 1)
+        hintLabel.font = Theme.fonts.hint
+        hintLabel.textColor = Theme.colors.textMuted
         hintLabel.alignment = .center
         view.addSubview(hintLabel)
         positionHint()
@@ -96,6 +98,14 @@ final class CanvasViewController: NSViewController {
     }
 
     private func updateHintVisibility() { hintLabel?.isHidden = !store.items.isEmpty }
+
+    private func installToolbar() {
+        guard let window = view.window, window.toolbar == nil else { return }
+        toolbar.onNewCard = { [weak self] in self?.createCard() }
+        toolbar.onNewDiff = { [weak self] in self?.createDiff() }
+        window.toolbar = toolbar.make()
+        window.toolbarStyle = .unified
+    }
 
     private func updateBackdrop() {
         guard backdrop != nil else { return }
@@ -112,16 +122,22 @@ final class CanvasViewController: NSViewController {
             self.viewport.updateLimits(contentBounds: self.store.bounds)
             self.saveWorkspace()
         }
-        item.containerView.onDelete = { [weak self, weak card = item as? Card] in
-            if let card { self?.deleteCard(card) }
+        item.containerView.onDelete = { [weak self, weak item] in
+            if let item { self?.deleteItem(item) }
         }
         documentView.addSubview(item.containerView)
     }
 
-    private func frame(_ card: Card) {
-        if card.terminal == nil { spawnTerminal(card) }
-        viewport.frame(rect: card.frame) { [weak self, weak card] in
-            if let t = card?.terminal { self?.view.window?.makeFirstResponder(t) }
+    /// Fly to an item. A card spawns its terminal (if dormant) and takes focus on
+    /// arrival; a diff object is already live, so we just fly.
+    private func frame(_ item: CanvasItem) {
+        if let card = item as? Card {
+            if card.terminal == nil { spawnTerminal(card) }
+            viewport.frame(rect: card.frame) { [weak self, weak card] in
+                if let t = card?.terminal { self?.view.window?.makeFirstResponder(t) }
+            }
+        } else {
+            viewport.frame(rect: item.frame, completion: nil)
         }
     }
 
@@ -132,18 +148,19 @@ final class CanvasViewController: NSViewController {
         t.startProcess(executable: exe, args: args, environment: spine.env(cardId: card.id),
                        currentDirectory: card.folder.path)
         card.terminal = t
-        card.containerView.setContent(t)
+        card.containerView.setContent(TerminalHostView(terminal: t, padding: CanvasLayout.terminalPadding))
         canvasLog("spawned \(card.id) in \(card.folder.path)")
     }
 
-    private func deleteCard(_ card: Card) {
-        card.terminal?.terminate()
-        card.containerView.removeFromSuperview()
-        store.remove(card)
+    private func deleteItem(_ item: CanvasItem) {
+        (item as? Card)?.terminal?.terminate()   // SIGTERM the agent
+        (item as? DiffObject)?.stop()            // stop the git watcher
+        item.containerView.removeFromSuperview()
+        store.remove(item)
         viewport.updateLimits(contentBounds: store.bounds)
         updateHintVisibility()
         saveWorkspace()
-        canvasLog("deleted \(card.id)")
+        canvasLog("deleted \(item.id)")
     }
 
     // MARK: Persistence
@@ -152,10 +169,28 @@ final class CanvasViewController: NSViewController {
             canvasLog("no saved workspace — starting empty")
             return
         }
-        store.load(ws)
-        store.items.forEach { installItemView($0) }
+        store.restore(seq: ws.seq)
+        for record in ws.items {
+            let frameRect = NSRect(x: record.x, y: record.y, width: record.w, height: record.h)
+            switch record.kind {
+            case "card":
+                guard let folder = record.folder else { continue }
+                let card = Card(id: record.id, title: record.title, frame: frameRect,
+                                folder: URL(fileURLWithPath: folder))
+                store.add(card)
+                installItemView(card)
+            case "diff":
+                guard let folder = record.folder else { continue }
+                let diff = DiffObject(id: record.id, frame: frameRect, folder: URL(fileURLWithPath: folder))
+                store.add(diff)
+                installItemView(diff)
+                diff.start()
+            default:
+                canvasLog("skipping unknown item kind: \(record.kind)")
+            }
+        }
         if let v = ws.viewport { savedViewport = (NSPoint(x: v.cx, y: v.cy), CGFloat(v.mag)) }
-        canvasLog("restored \(store.items.count) card(s)")
+        canvasLog("restored \(store.items.count) item(s)")
     }
 
     func saveWorkspace() {
@@ -177,8 +212,8 @@ final class CanvasViewController: NSViewController {
     private func handleMouse(_ e: NSEvent) -> NSEvent? {
         guard e.window === view.window, e.clickCount == 2 else { return e }
         let p = documentView.convert(e.locationInWindow, from: nil)
-        if let card = store.items.last(where: { $0.frame.contains(p) }) {
-            frame(card)
+        if let item = store.items.last(where: { $0.frame.contains(p) }) {
+            frame(item)
         } else {
             viewport.fitAll(contentBounds: store.bounds, animated: true)
         }
@@ -204,9 +239,11 @@ final class CanvasViewController: NSViewController {
         }
     }
 
+    /// True when focus is inside any on-canvas item — typing/scrolling there should
+    /// reach the item (a card's terminal, a diff's list) instead of panning the canvas.
     private func terminalIsFirstResponder() -> Bool {
         guard let fr = view.window?.firstResponder as? NSView else { return false }
-        return store.items.contains { fr === $0.terminal || fr.isDescendant(of: $0.containerView) }
+        return store.items.contains { fr.isDescendant(of: $0.containerView) }
     }
 
     // MARK: Create
@@ -223,12 +260,29 @@ final class CanvasViewController: NSViewController {
         }
     }
 
-    private func addCard(folder: URL) {
+    private func createDiff() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Watch as Diff"
+        panel.message = "Pick a git working tree to show its uncommitted changes."
+        panel.begin { [weak self] resp in
+            guard let self, resp == .OK, let url = panel.url else { return }
+            self.addDiff(folder: url)
+        }
+    }
+
+    /// The rect centered in the current viewport for a newly created item of `size`.
+    private func centeredFrame(_ size: NSSize) -> NSRect {
         let cb = scrollView.contentView.bounds
-        let frameRect = NSRect(x: cb.midX - CanvasLayout.cardSize.width / 2,
-                               y: cb.midY - CanvasLayout.cardSize.height / 2,
-                               width: CanvasLayout.cardSize.width, height: CanvasLayout.cardSize.height)
-        let card = Card(id: store.nextId(), title: folder.lastPathComponent, frame: frameRect, folder: folder)
+        return NSRect(x: cb.midX - size.width / 2, y: cb.midY - size.height / 2,
+                      width: size.width, height: size.height)
+    }
+
+    private func addCard(folder: URL) {
+        let card = Card(id: store.nextId(prefix: "card"), title: folder.lastPathComponent,
+                        frame: centeredFrame(CanvasLayout.cardSize), folder: folder)
         store.add(card)
         installItemView(card)
         viewport.updateLimits(contentBounds: store.bounds)
@@ -236,5 +290,18 @@ final class CanvasViewController: NSViewController {
         saveWorkspace()
         canvasLog("added \(card.id) -> \(folder.path)")
         frame(card)
+    }
+
+    private func addDiff(folder: URL) {
+        let diff = DiffObject(id: store.nextId(prefix: "diff"),
+                              frame: centeredFrame(CanvasLayout.diffSize), folder: folder)
+        store.add(diff)
+        installItemView(diff)
+        diff.start()
+        viewport.updateLimits(contentBounds: store.bounds)
+        updateHintVisibility()
+        saveWorkspace()
+        canvasLog("added \(diff.id) -> \(folder.path)")
+        frame(diff)
     }
 }

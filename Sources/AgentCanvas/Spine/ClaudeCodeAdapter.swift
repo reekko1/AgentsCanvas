@@ -34,9 +34,10 @@ final class ClaudeCodeAdapter: AgentAdapter {
 
     func status(event: String, payload: [String: Any]) -> CardStatus? {
         switch event {
-        case "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
-             "PreCompact", "PostCompact":
-            return .running
+        case "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "PostCompact":
+            return .running // actively working a turn
+        case "SessionStart":
+            return .idle    // ready & waiting for you — calm, NOT working yet
         case "PermissionRequest":
             return .blocked // dialog shown — needs you, immediate
         case "Stop":

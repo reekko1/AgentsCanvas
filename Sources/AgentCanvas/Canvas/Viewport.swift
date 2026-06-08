@@ -8,8 +8,10 @@ import QuartzCore
 final class Viewport {
     private let scrollView: NSScrollView
 
-    /// A framed item sits at this magnification (not 1:1 fill, which reads as "too zoomed").
-    var framingMagnification: CGFloat = 0.62
+    /// How much of the viewport a framed item fills (the rest is breathing-room margin).
+    var framingFill: CGFloat = 0.92
+    /// Never upscale past this when framing — keeps terminals/text crisp (≤1.0 = 1:1).
+    var framingMaxMagnification: CGFloat = 1.0
     /// Lower = can zoom out further (more margin around content).
     var maxZoomOutFactor: CGFloat = 0.4
 
@@ -74,9 +76,14 @@ final class Viewport {
         flyTimer = timer
     }
 
-    /// Fly to frame a single item at the comfortable framing magnification.
+    /// Fly to frame a single item so it fills the viewport (minus margin), sized to
+    /// the item — so a card and a wider diff both land comfortably large, not at a
+    /// fixed zoom. Capped at `framingMaxMagnification` so terminals stay crisp.
     func frame(rect: NSRect, completion: (() -> Void)? = nil) {
-        let m = max(scrollView.minMagnification, min(scrollView.maxMagnification, framingMagnification))
+        let vp = size
+        guard vp.width > 0, vp.height > 0, rect.width > 0, rect.height > 0 else { return }
+        let fit = min(vp.width / rect.width, vp.height / rect.height) * framingFill
+        let m = max(scrollView.minMagnification, min(framingMaxMagnification, fit))
         animateZoom(toCenter: NSPoint(x: rect.midX, y: rect.midY), mag: m, duration: 0.42, completion: completion)
     }
 

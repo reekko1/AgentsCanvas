@@ -19,37 +19,41 @@ final class ItemContainerView: NSView {
     var onMoved: ((NSPoint) -> Void)?
     var onDelete: (() -> Void)?
 
+    // Current accent, remembered so it can be re-resolved when the appearance flips
+    // (layer colors are frozen `.cgColor`s — see Theme.swift).
+    private var accentColor: NSColor = Theme.colors.neutralBorder
+    private var accentLoud = false
+
     init(title: String) {
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = NSColor(calibratedWhite: 0.12, alpha: 1).cgColor
-        layer?.borderWidth = 3
 
         titleBar.wantsLayer = true
-        titleBar.layer?.backgroundColor = NSColor(calibratedWhite: 0.20, alpha: 1).cgColor
         titleBar.onMovedEnd = { [weak self] origin in self?.onMoved?(origin) }
         addSubview(titleBar)
 
         titleLabel.stringValue = title
-        titleLabel.font = NSFont.systemFont(ofSize: 22, weight: .medium)
-        titleLabel.textColor = NSColor(calibratedWhite: 0.9, alpha: 1)
+        titleLabel.font = Theme.fonts.itemTitle
+        titleLabel.textColor = Theme.colors.textPrimary
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.isEditable = false; titleLabel.isBordered = false; titleLabel.drawsBackground = false
         titleBar.addSubview(titleLabel)
 
         deleteButton.title = "✕"
         deleteButton.isBordered = false
-        deleteButton.font = NSFont.systemFont(ofSize: 20, weight: .semibold)
-        deleteButton.contentTintColor = NSColor(calibratedWhite: 0.75, alpha: 1)
+        deleteButton.font = Theme.fonts.controlGlyph
+        deleteButton.contentTintColor = Theme.colors.textControl
         deleteButton.target = self
         deleteButton.action = #selector(deleteTapped)
         titleBar.addSubview(deleteButton)
 
         placeholder.alignment = .center
-        placeholder.font = NSFont.systemFont(ofSize: 22, weight: .regular)
-        placeholder.textColor = NSColor(calibratedWhite: 0.5, alpha: 1)
+        placeholder.font = Theme.fonts.placeholder
+        placeholder.textColor = Theme.colors.textMuted
         placeholder.isEditable = false; placeholder.isBordered = false; placeholder.drawsBackground = false
         addSubview(placeholder)
+
+        applySurfaceColors()   // both layers exist now
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -67,8 +71,13 @@ final class ItemContainerView: NSView {
 
     func setPlaceholder(_ text: String) { placeholder.stringValue = text }
 
+    /// Update the title-bar text (e.g. a diff object showing its live diffstat).
+    func setTitle(_ text: String) { titleLabel.stringValue = text }
+
     /// Accent the border by status; loud states add a pulsing glow.
     func setAccent(color: NSColor, loud: Bool) {
+        accentColor = color
+        accentLoud = loud
         layer?.borderColor = color.withAlphaComponent(loud ? 1 : 0.7).cgColor
         layer?.borderWidth = loud ? 6 : 3
         if loud {
@@ -86,6 +95,19 @@ final class ItemContainerView: NSView {
             layer?.removeAnimation(forKey: "glow")
             layer?.shadowOpacity = 0
         }
+    }
+
+    /// Push the (dynamic) surface + accent colors into the layers for the *current*
+    /// appearance. Layer `.cgColor`s don't auto-adapt, so we re-resolve on every flip.
+    private func applySurfaceColors() {
+        layer?.backgroundColor = Theme.colors.itemChrome.cgColor
+        titleBar.layer?.backgroundColor = Theme.colors.titleBar.cgColor
+        setAccent(color: accentColor, loud: accentLoud)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance { applySurfaceColors() }
     }
 
     override func layout() {

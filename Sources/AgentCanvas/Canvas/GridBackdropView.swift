@@ -16,14 +16,19 @@ final class GridBackdropView: NSView {
 
     private let baseSpacing: CGFloat = 80
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true   // re-fill with the new appearance's theme colors
+    }
+
     override func draw(_ dirtyRect: NSRect) {
-        NSColor(calibratedWhite: 0.09, alpha: 1).setFill()
+        Theme.colors.canvasBackground.setFill()
         bounds.fill()
 
         let spacing = baseSpacing * scale
         guard spacing >= 5 else { return } // too dense when far out — just dark, no moiré
 
-        NSColor(calibratedWhite: 0.17, alpha: 1).setFill()
+        Theme.colors.gridDot.setFill()
         let d = max(1.0, min(6.0, 3 * scale))
 
         // First grid line at or before the left/top edge, in document units.
