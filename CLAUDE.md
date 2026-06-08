@@ -24,6 +24,9 @@ Toolchain: Swift 6.3.x / macOS 13+ target. Sole dependency is **SwiftTerm** (ter
 
 The app is one window holding an `NSScrollView` (the pan/zoom engine) over a fixed 16000×16000 flipped `DocumentView`. Each agent is a **Card**: a real `LocalProcessTerminalView` living as a subview *inside* the document, so it pans/zooms with the canvas via the GPU layer transform — **no re-render on zoom**, only on content change. This is the validated pattern; don't reintroduce snapshots/offscreen-hosting/focus-overlays (that earlier design was removed as over-engineered).
 
+### Layout discipline inside canvas items (LOAD-BEARING — caused repeated crashes)
+The document view is GPU-**magnified** (a layer transform). Inside that transform, **never manually lay out AppKit controls**: no `override func layout()` setting subview `.frame`, no `sizeToFit()`, no `setPosition` on a split view, no per-pass `needsLayout`, and don't wrap the terminal in an extra custom-layout container. Manually framing constraint-backed controls (NSButton/NSTextField/NSTableView/NSSplitView/SwiftTerm's caret) inside the transform repeatedly invalidates the window's constraint engine mid-pass → AppKit aborts with *"more Layout Window passes than there are views in the window."* **Rule:** a canvas item's *outer* container is positioned by the canvas via `.frame`; **everything inside it is Auto Layout (constraints) only.** Use `NSStackView` for show/hide rows. `ItemContainerView` and `DiffContentView` follow this.
+
 Source layout under `Sources/AgentCanvas/` (SPM globs subfolders automatically — adding folders needs no `Package.swift` change):
 
 - **App/** — `main.swift`, `AppDelegate.swift` (window, save-on-terminate).

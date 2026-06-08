@@ -8,6 +8,10 @@ enum DiffAction { case stage, unstage, discard }
 /// the selected file's colored unified diff on the right — plus a footer with git
 /// actions (stage/unstage/discard per file via hover, commit + bulk in the footer).
 /// Reads via `GitDiff`; mutates via `GitActions` (destructive actions confirmed).
+///
+/// **Layout:** entirely Auto Layout — no `layout()` override, no manual `.frame`/
+/// `sizeToFit` on controls. Manually framing these constraint-backed controls inside
+/// the magnified canvas is what caused the window layout-loop crashes.
 final class DiffContentView: NSView {
     private let folder: URL
 
@@ -44,6 +48,7 @@ final class DiffContentView: NSView {
         wantsLayer = true
         buildPanes()
         buildFooter()
+        setupConstraints()
         applyBackground()
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -51,7 +56,7 @@ final class DiffContentView: NSView {
     // MARK: Build
 
     private func buildPanes() {
-        // Left: file list. Frame-based (autoresizing off) — positioned in `layout()`.
+        // Left: file list.
         let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("file"))
         col.resizingMask = .autoresizingMask
         table.addTableColumn(col)
@@ -66,10 +71,11 @@ final class DiffContentView: NSView {
         tableScroll.hasVerticalScroller = true
         tableScroll.drawsBackground = true
         tableScroll.backgroundColor = Theme.colors.listSurface
-        tableScroll.autoresizingMask = []
+        tableScroll.translatesAutoresizingMaskIntoConstraints = false
         addSubview(tableScroll)
 
-        // Right: diff text.
+        // Right: diff text. The textView is the scroll view's document — sized by the
+        // scroll view (NOT by our constraints), so it keeps the classic manual setup.
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = true
@@ -88,13 +94,13 @@ final class DiffContentView: NSView {
         textScroll.hasHorizontalScroller = true
         textScroll.drawsBackground = true
         textScroll.backgroundColor = Theme.colors.contentSurface
-        textScroll.autoresizingMask = []
+        textScroll.translatesAutoresizingMaskIntoConstraints = false
         addSubview(textScroll)
     }
 
     private func buildFooter() {
         footer.wantsLayer = true
-        footer.layer?.backgroundColor = Theme.colors.titleBar.cgColor
+        footer.translatesAutoresizingMaskIntoConstraints = false
         addSubview(footer)
 
         styleButton(stageAllButton, title: "Stage All", action: #selector(stageAllTapped))
@@ -107,6 +113,8 @@ final class DiffContentView: NSView {
         messageField.bezelStyle = .roundedBezel
         messageField.focusRingType = .none
         messageField.delegate = self
+        messageField.translatesAutoresizingMaskIntoConstraints = false
+        messageField.setContentHuggingPriority(.defaultLow, for: .horizontal)
         footer.addSubview(messageField)
 
         styleButton(commitButton, title: "Commit", action: #selector(commitTapped))
@@ -123,6 +131,40 @@ final class DiffContentView: NSView {
         b.font = Theme.fonts.listStat
         b.target = self
         b.action = action
+        b.translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    private func setupConstraints() {
+        let pad: CGFloat = 8
+        NSLayoutConstraint.activate([
+            // Footer pinned to the bottom, fixed height.
+            footer.leadingAnchor.constraint(equalTo: leadingAnchor),
+            footer.trailingAnchor.constraint(equalTo: trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: bottomAnchor),
+            footer.heightAnchor.constraint(equalToConstant: footerHeight),
+
+            // Two panes fill everything above the footer; list takes `listFraction`.
+            tableScroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            tableScroll.topAnchor.constraint(equalTo: topAnchor),
+            tableScroll.bottomAnchor.constraint(equalTo: footer.topAnchor),
+            tableScroll.widthAnchor.constraint(equalTo: widthAnchor, multiplier: listFraction),
+
+            textScroll.leadingAnchor.constraint(equalTo: tableScroll.trailingAnchor, constant: 1),
+            textScroll.trailingAnchor.constraint(equalTo: trailingAnchor),
+            textScroll.topAnchor.constraint(equalTo: topAnchor),
+            textScroll.bottomAnchor.constraint(equalTo: footer.topAnchor),
+
+            // Footer controls: bulk on the left, commit on the right, message fills the middle.
+            stageAllButton.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: pad),
+            stageAllButton.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
+            discardAllButton.leadingAnchor.constraint(equalTo: stageAllButton.trailingAnchor, constant: 6),
+            discardAllButton.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
+            commitButton.trailingAnchor.constraint(equalTo: footer.trailingAnchor, constant: -pad),
+            commitButton.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
+            messageField.leadingAnchor.constraint(equalTo: discardAllButton.trailingAnchor, constant: 12),
+            messageField.trailingAnchor.constraint(equalTo: commitButton.leadingAnchor, constant: -8),
+            messageField.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
+        ])
     }
 
     /// The view's own layer background is a frozen `.cgColor`, so re-resolve it when
@@ -135,32 +177,6 @@ final class DiffContentView: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         effectiveAppearance.performAsCurrentDrawingAppearance { applyBackground() }
-    }
-
-    override func layout() {
-        super.layout()
-        // Manual layout (no Auto Layout — consistent with the rest of the app, and
-        // NSSplitView's proportional resizing kept collapsing the list pane). Setting
-        // subview frames here does not re-dirty our layout.
-        let w = bounds.width, h = bounds.height
-        let divider: CGFloat = 1
-
-        // Footer pinned to the bottom (this view is unflipped → y=0 is the bottom).
-        footer.frame = NSRect(x: 0, y: 0, width: w, height: footerHeight)
-        let pad: CGFloat = 8, bh: CGFloat = 22, by = (footerHeight - bh) / 2
-        stageAllButton.sizeToFit();   discardAllButton.sizeToFit();   commitButton.sizeToFit()
-        let saW = stageAllButton.frame.width, daW = discardAllButton.frame.width, cW = max(70, commitButton.frame.width)
-        stageAllButton.frame = NSRect(x: pad, y: by, width: saW, height: bh)
-        discardAllButton.frame = NSRect(x: pad + saW + 6, y: by, width: daW, height: bh)
-        commitButton.frame = NSRect(x: w - pad - cW, y: by, width: cW, height: bh)
-        let msgX = pad + saW + 6 + daW + 12
-        messageField.frame = NSRect(x: msgX, y: by, width: max(0, w - pad - cW - 8 - msgX), height: bh)
-
-        // Two panes fill everything above the footer.
-        let paneH = max(0, h - footerHeight)
-        let leftW = (w * listFraction).rounded()
-        tableScroll.frame = NSRect(x: 0, y: footerHeight, width: leftW, height: paneH)
-        textScroll.frame = NSRect(x: leftW + divider, y: footerHeight, width: max(0, w - leftW - divider), height: paneH)
     }
 
     // MARK: Update
@@ -351,7 +367,9 @@ extension DiffContentView: NSTableViewDataSource, NSTableViewDelegate {
 }
 
 /// One row in the changed-file list: a status-colored dot, the path, and `+A −R`.
-/// On hover the stat is replaced by Stage/Unstage + Discard buttons.
+/// On hover the stat is replaced by Stage/Unstage + Discard buttons. Pure Auto
+/// Layout via an `NSStackView` — hidden arranged subviews collapse, so show/hide
+/// needs no manual frame work (which is what caused the layout-loop crashes).
 private final class DiffFileCell: NSTableCellView {
     private let dot = NSView()
     private let pathLabel = NSTextField(labelWithString: "")
@@ -371,23 +389,36 @@ private final class DiffFileCell: NSTableCellView {
         identifier = id
         dot.wantsLayer = true
         dot.layer?.cornerRadius = 4
-        addSubview(dot)
+        dot.translatesAutoresizingMaskIntoConstraints = false
 
         pathLabel.lineBreakMode = .byTruncatingMiddle
         pathLabel.font = Theme.fonts.listPath
         pathLabel.textColor = Theme.colors.textPrimary
-        addSubview(pathLabel)
+        pathLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         statLabel.font = Theme.fonts.listStat
         statLabel.alignment = .right
-        addSubview(statLabel)
+        statLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         styleAction(stageButton, action: #selector(stageTapped))
         styleAction(discardButton, action: #selector(discardTapped))
-        stageButton.isHidden = true
-        discardButton.isHidden = true
-        addSubview(stageButton)
-        addSubview(discardButton)
+
+        let row = NSStackView(views: [dot, pathLabel, statLabel, stageButton, discardButton])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 6
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            row.centerYAnchor.constraint(equalTo: centerYAnchor),
+            dot.widthAnchor.constraint(equalToConstant: 8),
+            dot.heightAnchor.constraint(equalToConstant: 8),
+        ])
+        setHoverState()
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -397,6 +428,8 @@ private final class DiffFileCell: NSTableCellView {
         b.font = Theme.fonts.listStat
         b.target = self
         b.action = action
+        b.translatesAutoresizingMaskIntoConstraints = false
+        b.setContentHuggingPriority(.required, for: .horizontal)
     }
 
     func configure(with change: GitChange) {
@@ -416,7 +449,7 @@ private final class DiffFileCell: NSTableCellView {
         // Stage button reflects state: stage if there are unstaged changes, else unstage.
         stageButton.title = change.hasUnstaged ? "Stage" : "Unstage"
         discardButton.title = "Discard"
-        updateHoverVisibility()
+        setHoverState()
     }
 
     @objc private func stageTapped() {
@@ -438,38 +471,21 @@ private final class DiffFileCell: NSTableCellView {
         addTrackingArea(ta)
         trackingArea = ta
     }
-    override func mouseEntered(with event: NSEvent) { hovering = true; updateHoverVisibility() }
-    override func mouseExited(with event: NSEvent) { hovering = false; updateHoverVisibility() }
+    override func mouseEntered(with event: NSEvent) { hovering = true; setHoverState() }
+    override func mouseExited(with event: NSEvent) { hovering = false; setHoverState() }
 
-    private func updateHoverVisibility() {
+    /// Toggle visibility only — the stack view collapses hidden arranged subviews and
+    /// relays out itself. No `needsLayout`, no frame math.
+    private func setHoverState() {
+        statLabel.isHidden = hovering
         stageButton.isHidden = !hovering
         discardButton.isHidden = !hovering
-        statLabel.isHidden = hovering   // buttons take the stat's spot
-        needsLayout = true
     }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         effectiveAppearance.performAsCurrentDrawingAppearance {
             dot.layer?.backgroundColor = dotColor.cgColor
-        }
-    }
-
-    override func layout() {
-        super.layout()
-        let h = bounds.height
-        dot.frame = NSRect(x: 8, y: h / 2 - 4, width: 8, height: 8)
-        if hovering {
-            discardButton.sizeToFit(); stageButton.sizeToFit()
-            let dW = discardButton.frame.width, sW = stageButton.frame.width
-            discardButton.frame = NSRect(x: bounds.width - dW - 8, y: h / 2 - 9, width: dW, height: 18)
-            stageButton.frame = NSRect(x: bounds.width - dW - sW - 12, y: h / 2 - 9, width: sW, height: 18)
-            pathLabel.frame = NSRect(x: 24, y: h / 2 - 9, width: max(0, bounds.width - 24 - dW - sW - 18), height: 18)
-        } else {
-            statLabel.sizeToFit()
-            let sw = max(statLabel.frame.width, 48)
-            statLabel.frame = NSRect(x: bounds.width - sw - 8, y: h / 2 - 9, width: sw, height: 18)
-            pathLabel.frame = NSRect(x: 24, y: h / 2 - 9, width: bounds.width - 24 - sw - 14, height: 18)
         }
     }
 }

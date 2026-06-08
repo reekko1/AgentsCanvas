@@ -1,9 +1,14 @@
 import AppKit
 
-/// The shared chrome for any on-canvas item (PRD: cards today, diff objects next):
-/// a draggable title bar (folder/name + ✕ delete) over a content view, with a
-/// status-colored accent border (+ glow when loud). Content-agnostic — a card
-/// puts a terminal here; a diff object would put its diff view.
+/// The shared chrome for any on-canvas item (cards + diff objects): a draggable
+/// title bar (folder/name + ✕ delete) over a content view, with a status-colored
+/// accent border (+ glow when loud).
+///
+/// **Layout contract (important):** this view is positioned by the *canvas* via its
+/// `frame` (it lives in the document view). Everything *inside* it is laid out with
+/// Auto Layout constraints — we never set inner subview frames or call `sizeToFit`.
+/// Manually framing the constraint-backed AppKit controls in here, inside the
+/// magnified document, is what caused the "more layout passes than views" crashes.
 final class ItemContainerView: NSView {
     override var isFlipped: Bool { true }
 
@@ -11,14 +16,16 @@ final class ItemContainerView: NSView {
     private let titleBarHeight: CGFloat = 44
 
     /// Breathing room between the window edges and the content (e.g. a card's
-    /// terminal). Default 0 — the diff object fills edge-to-edge.
-    var contentInset: CGFloat = 0 { didSet { needsLayout = true } }
+    /// terminal). Default 0 — the diff object fills edge-to-edge. Applied as the
+    /// content's constraint constants.
+    var contentInset: CGFloat = 0 { didSet { updateContentInsets() } }
 
     private let titleBar = DragBarView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let deleteButton = NSButton()
     private let placeholder = NSTextField(labelWithString: "")
     private(set) var content: NSView?
+    private var contentConstraints: [NSLayoutConstraint] = []
 
     var onMoved: ((NSPoint) -> Void)?
     var onDelete: (() -> Void)?
@@ -33,6 +40,7 @@ final class ItemContainerView: NSView {
         wantsLayer = true
 
         titleBar.wantsLayer = true
+        titleBar.translatesAutoresizingMaskIntoConstraints = false
         titleBar.onMovedEnd = { [weak self] origin in self?.onMoved?(origin) }
         addSubview(titleBar)
 
@@ -41,6 +49,7 @@ final class ItemContainerView: NSView {
         titleLabel.textColor = Theme.colors.textPrimary
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.isEditable = false; titleLabel.isBordered = false; titleLabel.drawsBackground = false
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleBar.addSubview(titleLabel)
 
         deleteButton.title = "✕"
@@ -49,13 +58,45 @@ final class ItemContainerView: NSView {
         deleteButton.contentTintColor = Theme.colors.textControl
         deleteButton.target = self
         deleteButton.action = #selector(deleteTapped)
+        deleteButton.translatesAutoresizingMaskIntoConstraints = false
         titleBar.addSubview(deleteButton)
 
         placeholder.alignment = .center
         placeholder.font = Theme.fonts.placeholder
         placeholder.textColor = Theme.colors.textMuted
         placeholder.isEditable = false; placeholder.isBordered = false; placeholder.drawsBackground = false
+        placeholder.translatesAutoresizingMaskIntoConstraints = false
         addSubview(placeholder)
+
+        // A guide spanning the content area (below the title bar) — used to center
+        // the placeholder; content is pinned here too (in setContent).
+        let contentGuide = NSLayoutGuide()
+        addLayoutGuide(contentGuide)
+
+        NSLayoutConstraint.activate([
+            titleBar.topAnchor.constraint(equalTo: topAnchor, constant: borderInset),
+            titleBar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: borderInset),
+            titleBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -borderInset),
+            titleBar.heightAnchor.constraint(equalToConstant: titleBarHeight),
+
+            deleteButton.trailingAnchor.constraint(equalTo: titleBar.trailingAnchor, constant: -8),
+            deleteButton.centerYAnchor.constraint(equalTo: titleBar.centerYAnchor),
+            deleteButton.widthAnchor.constraint(equalToConstant: 32),
+            deleteButton.heightAnchor.constraint(equalToConstant: 32),
+
+            titleLabel.leadingAnchor.constraint(equalTo: titleBar.leadingAnchor, constant: 14),
+            titleLabel.centerYAnchor.constraint(equalTo: titleBar.centerYAnchor),
+            titleLabel.trailingAnchor.constraint(equalTo: deleteButton.leadingAnchor, constant: -8),
+
+            contentGuide.topAnchor.constraint(equalTo: titleBar.bottomAnchor),
+            contentGuide.leadingAnchor.constraint(equalTo: leadingAnchor),
+            contentGuide.trailingAnchor.constraint(equalTo: trailingAnchor),
+            contentGuide.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            placeholder.centerXAnchor.constraint(equalTo: contentGuide.centerXAnchor),
+            placeholder.centerYAnchor.constraint(equalTo: contentGuide.centerYAnchor),
+            placeholder.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 8),
+        ])
 
         applySurfaceColors()   // both layers exist now
     }
@@ -63,14 +104,30 @@ final class ItemContainerView: NSView {
 
     @objc private func deleteTapped() { onDelete?() }
 
-    /// Install the item's live content (terminal, diff view, …), hiding the placeholder.
+    /// Install the item's live content (terminal, diff view, …), pinned to the content
+    /// area (below the title bar) with `contentInset` breathing room — via constraints.
     func setContent(_ view: NSView) {
+        NSLayoutConstraint.deactivate(contentConstraints)
         content?.removeFromSuperview()
         content = view
+        view.translatesAutoresizingMaskIntoConstraints = false
         addSubview(view, positioned: .below, relativeTo: titleBar) // title bar stays on top
+        contentConstraints = [
+            view.topAnchor.constraint(equalTo: titleBar.bottomAnchor, constant: contentInset),
+            view.leadingAnchor.constraint(equalTo: leadingAnchor, constant: borderInset + contentInset),
+            view.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -(borderInset + contentInset)),
+            view.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -(borderInset + contentInset)),
+        ]
+        NSLayoutConstraint.activate(contentConstraints)
         placeholder.isHidden = true
-        needsLayout = true
-        layoutSubtreeIfNeeded()
+    }
+
+    private func updateContentInsets() {
+        guard contentConstraints.count == 4 else { return }
+        contentConstraints[0].constant = contentInset
+        contentConstraints[1].constant = borderInset + contentInset
+        contentConstraints[2].constant = -(borderInset + contentInset)
+        contentConstraints[3].constant = -(borderInset + contentInset)
     }
 
     func setPlaceholder(_ text: String) { placeholder.stringValue = text }
@@ -112,19 +169,5 @@ final class ItemContainerView: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         effectiveAppearance.performAsCurrentDrawingAppearance { applySurfaceColors() }
-    }
-
-    override func layout() {
-        super.layout()
-        let w = bounds.width, h = bounds.height
-        titleBar.frame = NSRect(x: borderInset, y: borderInset, width: w - 2 * borderInset, height: titleBarHeight)
-        let tbw = titleBar.bounds.width
-        deleteButton.frame = NSRect(x: tbw - 40, y: (titleBarHeight - 32) / 2, width: 32, height: 32)
-        titleLabel.frame = NSRect(x: 14, y: (titleBarHeight - 28) / 2, width: tbw - 60, height: 28)
-
-        let contentY = borderInset + titleBarHeight
-        let area = NSRect(x: borderInset, y: contentY, width: w - 2 * borderInset, height: h - contentY - borderInset)
-        content?.frame = area.insetBy(dx: contentInset, dy: contentInset)
-        placeholder.frame = NSRect(x: 8, y: contentY + (h - contentY) / 2 - 20, width: w - 16, height: 40)
     }
 }
