@@ -84,8 +84,7 @@ final class DiffContentView: NSView {
         leftColumn.addSubview(messageField)
 
         commitButton.title = "Commit"
-        commitButton.image = sfSymbol("checkmark", size: 11, weight: .semibold)
-        commitButton.imagePosition = .imageLeading
+        commitButton.imagePosition = .imageLeading   // image (checkmark) set, colored, in updateCommitEnablement
         commitButton.bezelStyle = .rounded
         commitButton.keyEquivalent = "\r"
         commitButton.keyEquivalentModifierMask = .command
@@ -274,9 +273,19 @@ final class DiffContentView: NSView {
     private func updateCommitEnablement() {
         let hasMsg = !messageField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let enabled = anyStaged && hasMsg
+        let fg = enabled ? NSColor.white : Theme.colors.textMuted
         commitButton.isEnabled = enabled
         commitButton.bezelColor = enabled ? .controlAccentColor : Theme.colors.commitIdle
-        commitButton.contentTintColor = enabled ? .white : Theme.colors.textMuted
+        // Color BOTH the title and the checkmark explicitly: on a bezel-colored button
+        // neither `contentTintColor` (title) nor the control tint (image) gives white.
+        commitButton.attributedTitle = NSAttributedString(string: "Commit", attributes: [
+            .foregroundColor: fg,
+            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+        ])
+        let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [fg]))
+        commitButton.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)?
+            .withSymbolConfiguration(cfg)
     }
 
     /// Per-file action from a row's hover button. Destructive (discard) is confirmed first.
@@ -491,6 +500,7 @@ private final class DiffFileCell: NSTableCellView {
 
     private var change: GitChange?
     private var side: DiffSide = .unstaged
+    private var letterStatus: GitFileStatus = .modified
     var onAction: ((DiffAction, GitChange) -> Void)?
 
     init(id: NSUserInterfaceItemIdentifier) {
@@ -538,28 +548,39 @@ private final class DiffFileCell: NSTableCellView {
     func configure(_ node: FileNode) {
         change = node.change
         side = node.side
-        let c = node.change
-        // Name: basename in primary color, parent dir muted (VS Code style).
+        letterStatus = (side == .staged ? node.change.stagedStatus : node.change.unstagedStatus) ?? node.change.status
+        letterLabel.stringValue = letterStatus.letter
+        // Actions per side: unstaged → Stage(+) & Discard(↩); staged → Unstage(−).
+        primaryButton.setSymbol(side == .staged ? "minus" : "plus")
+        applyColors()
+        setHoverState()
+    }
+
+    /// On a selected (emphasized/blue) row, flip text + icons to white for contrast;
+    /// otherwise use the theme colors. AppKit sets `backgroundStyle` on selection.
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet { applyColors() }
+    }
+
+    private func applyColors() {
+        guard let c = change else { return }
+        let emph = backgroundStyle == .emphasized
+        // Name: basename + muted parent dir (VS Code style).
         let full = c.path as NSString
-        let base = full.lastPathComponent
+        let nameColor = emph ? NSColor.white : Theme.colors.textPrimary
+        let dirColor = emph ? NSColor(calibratedWhite: 0.85, alpha: 1) : Theme.colors.textMuted
+        let name = NSMutableAttributedString(string: full.lastPathComponent, attributes: [.foregroundColor: nameColor])
         let dir = full.deletingLastPathComponent
-        let name = NSMutableAttributedString(string: base, attributes: [.foregroundColor: Theme.colors.textPrimary])
         if !dir.isEmpty {
             name.append(NSAttributedString(string: "  \(dir)", attributes: [
-                .foregroundColor: Theme.colors.textMuted,
-                .font: NSFont.systemFont(ofSize: 10),
+                .foregroundColor: dirColor, .font: NSFont.systemFont(ofSize: 10),
             ]))
         }
         nameLabel.attributedStringValue = name
-
-        let status = (side == .staged ? c.stagedStatus : c.unstagedStatus) ?? c.status
-        letterLabel.stringValue = status.letter
-        letterLabel.textColor = status.color
-        icon.contentTintColor = Theme.colors.textMuted
-
-        // Actions per side: unstaged → Stage(+) & Discard(↩); staged → Unstage(−).
-        primaryButton.setSymbol(side == .staged ? "minus" : "plus")
-        setHoverState()
+        letterLabel.textColor = emph ? .white : letterStatus.color
+        icon.contentTintColor = emph ? .white : Theme.colors.textMuted
+        primaryButton.emphasized = emph
+        discardButton.emphasized = emph
     }
 
     override func updateTrackingAreas() {
@@ -629,6 +650,9 @@ private extension NSLayoutConstraint {
 private final class IconButton: NSView {
     private let imageView = NSImageView()
     private var tracking: NSTrackingArea?
+    private var isHovering = false
+    /// When the containing row is selected (blue), tint white for contrast.
+    var emphasized = false { didSet { refreshTint() } }
     var onClick: (() -> Void)?
 
     init(symbol: String) {
@@ -659,15 +683,16 @@ private final class IconButton: NSView {
                                owner: self, userInfo: nil)
         addTrackingArea(t); tracking = t
     }
-    override func mouseEntered(with event: NSEvent) { setHovered(true) }
-    override func mouseExited(with event: NSEvent) { setHovered(false) }
+    override func mouseEntered(with event: NSEvent) { isHovering = true; refreshTint() }
+    override func mouseExited(with event: NSEvent) { isHovering = false; refreshTint() }
     override func mouseDown(with event: NSEvent) {}   // swallow so we receive mouseUp
     override func mouseUp(with event: NSEvent) {
         if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
     }
 
-    private func setHovered(_ on: Bool) {
-        layer?.backgroundColor = (on ? Theme.colors.controlHover : NSColor.clear).cgColor
-        imageView.contentTintColor = on ? Theme.colors.textPrimary : Theme.colors.textControl
+    private func refreshTint() {
+        layer?.backgroundColor = (isHovering ? Theme.colors.controlHover : NSColor.clear).cgColor
+        imageView.contentTintColor = emphasized ? .white
+            : (isHovering ? Theme.colors.textPrimary : Theme.colors.textControl)
     }
 }
