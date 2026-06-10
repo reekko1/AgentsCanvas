@@ -366,7 +366,7 @@ final class CanvasViewController: NSViewController {
 
     private func spawnTerminal(_ card: Card) {
         guard card.terminal == nil else { return }
-        let t = LocalProcessTerminalView(frame: .zero)
+        let t = CanvasTerminalView(frame: .zero)
         switch card.role {
         case .agent:
             let (exe, args) = spine.launchCommand(folder: card.folder)
