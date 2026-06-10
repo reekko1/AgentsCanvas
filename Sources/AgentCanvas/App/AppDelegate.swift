@@ -39,6 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let main = NSMenu()
 
         let appMenu = NSMenu()
+        appMenu.addItem(Updater.menuItem())
+        appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Hide Agent Canvas", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Quit Agent Canvas", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")

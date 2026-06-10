@@ -96,6 +96,24 @@ final class CanvasViewController: NSViewController {
         heartbeat = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             self?.heartbeatTick()
         }
+
+        // Re-probe readiness whenever the user comes back to the app — they
+        // likely just installed the missing tool, and the row dissolving on
+        // return is the confirmation (no dialogs, no "setup complete").
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            self?.refreshReadiness()
+        }
+    }
+
+    /// First-run environment check, surfaced through the empty state. Only
+    /// meaningful while the canvas is empty — once cards exist, the terminal
+    /// itself reports reality.
+    private func refreshReadiness() {
+        guard store.items.isEmpty, frames.isEmpty else { return }
+        Readiness.check { [weak self] report in
+            self?.emptyView?.apply(report)
+        }
     }
 
     override func viewDidAppear() {
@@ -112,6 +130,7 @@ final class CanvasViewController: NSViewController {
         zoomHUD.setLevel(scrollView.magnification)
         refreshActivity()
         updateHintVisibility()
+        refreshReadiness()
     }
 
     override func viewDidLayout() {

@@ -14,7 +14,29 @@ SPM executable, no Xcode project (it's gitignored — open via `Package.swift` i
 swift build              # build
 swift run                # build + launch the app (this is how you run it)
 swift build -c release   # optimized build
+Packaging/package.sh     # → dist/Agent Canvas.app + zip (ad-hoc signed; see Releasing)
 ```
+
+Run **one canvas instance at a time**: a second instance loses the port race, falls back to ephemeral, and rewrites `spine.json`/`hooks.json` out from under the first. The app icon and DMG background regenerate via `swift Packaging/make-icon.swift` / `make-dmg-background.swift` (outputs are committed so packaging never depends on the generators).
+
+## Releasing
+
+```sh
+DMG=1 NOTARY_PROFILE=canvas-notary VERSION=x.y.z \
+CODESIGN_IDENTITY="Developer ID Application: Rakan ALYahya (HS29478CLK)" \
+Packaging/package.sh     # build → sign → notarize+staple app zip → DMG → notarize+staple DMG
+Packaging/appcast.sh     # EdDSA-sign the zip, prepend an item to docs/appcast.xml
+# then: commit docs/appcast.xml; gh release create vx.y.z dist/AgentCanvas-x.y.z.{zip,dmg}
+```
+
+Facts that keep this working:
+- **Artifacts have roles:** the DMG is the first-install/download artifact (drag-to-Applications teaches correct install and avoids App Translocation); the **zip is the Sparkle update artifact** — the appcast enclosure must point at it.
+- **Sparkle** comes via SPM (binary xcframework + CLI tools under `.build/artifacts/sparkle/Sparkle/bin/`). `App/Updater.swift` arms only when `SUFeedURL` exists in Info.plist — `swift run` dev builds have no bundle, so the updater stays dormant and the menu item self-disables. `package.sh` embeds `Sparkle.framework` into `Contents/Frameworks`, adds that rpath, strips build-machine rpaths, and re-signs the framework under our identity (hardened-runtime library validation rejects other teams' signatures).
+- **Versioning:** `CFBundleShortVersionString` = `VERSION`; `CFBundleVersion` = git commit count (monotonic — Sparkle compares this). Never reuse a version; `appcast.sh` refuses duplicates.
+- **Keys/credentials:** Sparkle EdDSA private key lives in the login keychain ("Private key for signing Sparkle updates"); the public key is pinned in `package.sh` (`ED_PUBLIC_KEY`). Notary credentials = keychain profile `canvas-notary`; Developer ID team is **HS29478CLK**.
+- **Feed:** `https://raw.githubusercontent.com/reekko1/AgentsCanvas/main/docs/appcast.xml` (raw URL works with zero Pages setup; switch `SU_FEED_URL` + re-release to migrate).
+- Universal (x86_64) builds need the Metal toolchain (`xcodebuild -downloadComponent MetalToolchain` — SwiftTerm ships Metal shaders); the script falls back to native arm64.
+- **Mac App Store is permanently out** — the App Sandbox forbids everything this app is (PTYs, tmux, loopback servers, arbitrary-folder git).
 
 There is no test target. The spine has been verified end-to-end manually with a real `claude` session, not by automated tests. To smoke-test the hook pipeline headlessly, the sink port is written to `/tmp/agentcanvas.port`.
 

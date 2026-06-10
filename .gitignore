@@ -12,3 +12,7 @@ DerivedData/
 
 # Local Claude Code skills/config
 .claude/
+
+# Packaging output
+dist/
+Packaging/AppIcon.iconset/

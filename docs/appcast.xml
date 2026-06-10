@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Agent Canvas</title>
+    <description>Updates for Agent Canvas</description>
+    <language>en</language>
+    <!-- items -->
+    <item>
+      <title>Agent Canvas 0.1.0</title>
+      <pubDate>Wed, 10 Jun 2026 08:43:21 +0000</pubDate>
+      <sparkle:version>12</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/reekko1/AgentsCanvas/releases/download/v0.1.0/AgentCanvas-0.1.0.zip" sparkle:edSignature="vP9ijC2iXBQPyg+0aqF8P+ucBb4v5seKeOUW3ac9qGogAQ07XHj0MGcJsRXWuM1csa3C6xu4zD63+Ld6P8aHCQ==" length="85187197" type="application/octet-stream"/>
+    </item>
+  </channel>
+</rss>
