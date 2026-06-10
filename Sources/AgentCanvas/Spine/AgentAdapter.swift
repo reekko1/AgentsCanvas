@@ -34,11 +34,14 @@ protocol AgentAdapter: AnyObject {
     var name: String { get }
 
     /// Write CLI-specific config into `dir` so a launched session POSTs its
-    /// lifecycle events to the sink listening on 127.0.0.1:`port`.
-    func installConfig(dir: URL, port: UInt16) throws
+    /// lifecycle events to the sink listening on 127.0.0.1:`port`, echoing `token`
+    /// on every request (the sink drops anything without it).
+    func installConfig(dir: URL, port: UInt16, token: String) throws
 
-    /// How to spawn this agent in `folder` (the terminal sets the cwd separately).
-    func launchCommand(folder: URL) -> (executable: String, args: [String])
+    /// The shell command line that starts this agent. The spine runs it under the
+    /// user's login shell (so the CLI resolves from their real PATH) inside the
+    /// session substrate; working directory and card env are supplied around it.
+    func launchCommand() -> String
 
     /// Map a received event + payload to a `CardEvent`. `nil` means "ignore".
     func event(_ name: String, payload: [String: Any]) -> CardEvent?

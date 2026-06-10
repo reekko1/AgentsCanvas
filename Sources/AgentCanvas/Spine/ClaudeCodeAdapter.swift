@@ -29,7 +29,7 @@ final class ClaudeCodeAdapter: AgentAdapter {
         "Stop", "StopFailure", "SessionEnd",
     ]
 
-    func installConfig(dir: URL, port: UInt16) throws {
+    func installConfig(dir: URL, port: UInt16, token: String) throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = "http://127.0.0.1:\(port)/hook"
         func entry(timeout: Int, statusMessage: String? = nil) -> [String: Any] {
@@ -37,7 +37,7 @@ final class ClaudeCodeAdapter: AgentAdapter {
                 "type": "http",
                 "url": url,
                 "timeout": timeout,
-                "headers": ["X-Canvas-Card": "$CANVAS_CARD_ID"],
+                "headers": ["X-Canvas-Card": "$CANVAS_CARD_ID", "X-Canvas-Token": token],
                 "allowedEnvVars": ["CANVAS_CARD_ID"],
             ]
             if let statusMessage { e["statusMessage"] = statusMessage }
@@ -50,16 +50,17 @@ final class ClaudeCodeAdapter: AgentAdapter {
         let file = dir.appendingPathComponent("hooks.json")
         let data = try JSONSerialization.data(withJSONObject: ["hooks": hooks], options: [.prettyPrinted, .sortedKeys])
         try data.write(to: file)
+        // The file now carries the sink token — keep it owner-readable only.
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         settingsFile = file
         canvasLog("wrote HTTP hooks (port \(port)) → \(file.path)")
     }
 
-    func launchCommand(folder: URL) -> (executable: String, args: [String]) {
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+    func launchCommand() -> String {
         guard let settings = settingsFile?.path else {
-            return (shell, ["-lc", "exec claude"])   // sink not ready (shouldn't happen) → unwatched session
+            return "exec claude"   // sink not ready (shouldn't happen) → unwatched session
         }
-        return (shell, ["-lc", "exec claude --settings \(shellQuote(settings))"])
+        return "exec claude --settings \(shellQuote(settings))"
     }
 
     func isPermissionAsk(_ name: String) -> Bool { name == "PermissionRequest" }
@@ -226,9 +227,5 @@ final class ClaudeCodeAdapter: AgentAdapter {
 
     private func body(_ obj: [String: Any]) -> Data {
         (try? JSONSerialization.data(withJSONObject: obj)) ?? Data()
-    }
-
-    private func shellQuote(_ s: String) -> String {
-        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

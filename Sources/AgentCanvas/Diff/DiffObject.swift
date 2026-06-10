@@ -16,12 +16,7 @@ final class DiffObject: CanvasItem {
 
     private let name: String
     private let diffView: DiffContentView
-    private let compactView = DiffCompactView()
     private let watcher: DiffWatcher
-
-    /// LOD: the full two-pane tool when focused, a compact file list when far.
-    private var showingFull = true
-    private var lastSnapshot: GitSnapshot = .clean
 
     init(id: String, frame: NSRect, folder: URL) {
         self.id = id
@@ -41,25 +36,10 @@ final class DiffObject: CanvasItem {
 
         watcher.onChange = { [weak self] snapshot in
             guard let self else { return }
-            self.lastSnapshot = snapshot
-            if self.showingFull { self.diffView.apply(snapshot) } else { self.compactView.apply(snapshot) }
+            self.diffView.apply(snapshot)
             self.containerView.setTrailing(self.diffstat(for: snapshot))
         }
         diffView.onMutated = { [weak self] in self?.watcher.poke() }  // refresh right after a git action
-    }
-
-    /// Swap between the full tool (focused) and the compact list (far). Driven by
-    /// the controller from the current magnification × this item's on-canvas size.
-    func setDetail(full: Bool) {
-        guard full != showingFull else { return }
-        showingFull = full
-        if full {
-            containerView.setContent(diffView)
-            diffView.apply(lastSnapshot)
-        } else {
-            containerView.setContent(compactView)
-            compactView.apply(lastSnapshot)
-        }
     }
 
     func start() { watcher.start() }

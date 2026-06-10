@@ -51,7 +51,6 @@ final class CanvasViewController: NSViewController {
         viewport = Viewport(scrollView: scrollView)
         viewport.onChange = { [weak self] in
             guard let self else { return }
-            self.updateItemDetail()
             self.syncFrameLabels()
             self.zoomHUD?.setLevel(self.scrollView.magnification)
         }
@@ -59,6 +58,7 @@ final class CanvasViewController: NSViewController {
 
         spine.onUpdate = { [weak self] cardId, event in
             guard let self, let card = self.store.card(cardId) else { return }
+            let previous = card.status
             let statusChanged = card.apply(event)
             if let s = event.status, s != .blocked {
                 // Any forward progress resolves the card's held asks: answered in
@@ -66,11 +66,15 @@ final class CanvasViewController: NSViewController {
                 // already-answered ask is a harmless no-op.
                 self.releaseAsks(for: cardId)
             }
-            if statusChanged || event.noteworthy {
+            // The card always reflects every transition (it just did, via apply);
+            // the feed only gets the ones worth reading later.
+            if (statusChanged && Self.feedWorthy(from: previous, to: card.status)) || event.noteworthy {
                 self.feed.record(id: cardId, name: card.title, status: card.status,
                                  detail: event.detail, date: Date())
+            }
+            if statusChanged || event.noteworthy {
                 self.refreshActivity()
-                self.refreshFrames()   // a member going loud lights the frame's "needs you" tag
+                self.refreshFrames()   // a member going loud (or calming) updates the frame's "needs you" tag
             }
             if statusChanged, card.status.isLoud { self.escalate() }
         }
@@ -81,6 +85,9 @@ final class CanvasViewController: NSViewController {
             self.refreshActivity()
             self.escalate()
         }
+        // The remote panel's Allow/Deny carries the same authority as the in-app
+        // activity center — both land on the same decideAsk.
+        spine.remote.onDecide = { [weak self] id, allow in self?.decideAsk(id, allow: allow) }
         spine.start()
 
         loadWorkspace()
@@ -101,7 +108,6 @@ final class CanvasViewController: NSViewController {
         } else {
             fitAll(animated: false)
         }
-        updateItemDetail()
         syncFrameLabels()
         zoomHUD.setLevel(scrollView.magnification)
         refreshActivity()
@@ -223,11 +229,49 @@ final class CanvasViewController: NSViewController {
         }
         notifPanel.reload(feed, approvals: approvals, loudCount: loud)
         NSApp.dockTile.badgeLabel = loud > 0 ? "\(loud)" : ""
+        publishRemoteState(loudCount: loud, approvals: approvals)
+    }
+
+    /// Mirror the attention state to the remote panel. Riding the same funnel as
+    /// the in-app activity center means the two views can never disagree.
+    private func publishRemoteState(loudCount: Int, approvals: [PanelApproval]) {
+        let cards = store.items.compactMap { item -> RemoteState.Card? in
+            guard let card = item as? Card, card.role == .agent else { return nil }
+            return RemoteState.Card(id: card.id, name: card.title, status: card.status.word,
+                                    loud: card.status.isLoud,
+                                    since: card.statusSince.timeIntervalSince1970,
+                                    task: card.taskLabel, model: card.model,
+                                    permissionMode: card.permissionMode,
+                                    subagents: card.subagentCount)
+        }
+        let asks = approvals.map {
+            RemoteState.Approval(id: $0.id.uuidString, name: $0.name, detail: $0.detail,
+                                 created: $0.created.timeIntervalSince1970)
+        }
+        let rows = feed.events.map {
+            RemoteState.FeedRow(name: $0.name, status: $0.status.word, loud: $0.loud,
+                                message: $0.message, date: $0.date.timeIntervalSince1970)
+        }
+        spine.remote.publish(RemoteState(cards: cards, approvals: asks, feed: rows,
+                                         needsYou: loudCount + asks.count))
     }
 
     /// Pull the user back when an agent goes loud while they're elsewhere.
     private func escalate() {
         if !NSApp.isActive { NSApp.requestUserAttention(.criticalRequest) }
+    }
+
+    /// Whether a status transition earns an activity row. Arrivals into `running`
+    /// and `idle` are usually echoes of the user's own actions (they typed the
+    /// prompt; done decayed to idle) — noise that crowds out the rows that matter.
+    /// Two exceptions are kept because they're things that happened *unwatched*:
+    /// a stalled card resuming on its own, and a session dying mid-work.
+    private static func feedWorthy(from previous: CardStatus, to current: CardStatus) -> Bool {
+        switch current {
+        case .running: return previous == .stalled   // self-recovery
+        case .idle:    return previous == .running   // session exited mid-work
+        default:       return true
+        }
     }
 
     /// Stall watchdog + attention-debt refresh, every 30s: a running card with no
@@ -284,15 +328,6 @@ final class CanvasViewController: NSViewController {
         if let item = store.items.first(where: { $0.id == id }) { frame(item) }
     }
 
-    /// Diff objects swap to their full two-pane tool once big enough on screen,
-    /// and to a compact file list when far (the decided LOD for diffs).
-    private func updateItemDetail() {
-        let mag = scrollView.magnification
-        for case let diff as DiffObject in store.items {
-            diff.setDetail(full: diff.frame.width * mag >= 520)
-        }
-    }
-
     // MARK: Framing
     /// The canvas extent that framing + zoom-limits must cover: on-canvas items
     /// *and* frames. A frame can extend past its member cards — or be empty — and
@@ -339,7 +374,6 @@ final class CanvasViewController: NSViewController {
             item.frame = frame
             self.updateZoomLimits()
             self.refreshFrames()        // resizing moves the item's center → membership can change
-            self.updateItemDetail()     // a diff may cross the LOD threshold at its new size
             self.saveWorkspace()
         }
         item.containerView.onDelete = { [weak self, weak item] in
@@ -367,16 +401,11 @@ final class CanvasViewController: NSViewController {
     private func spawnTerminal(_ card: Card) {
         guard card.terminal == nil else { return }
         let t = CanvasTerminalView(frame: .zero)
-        switch card.role {
-        case .agent:
-            let (exe, args) = spine.launchCommand(folder: card.folder)
-            t.startProcess(executable: exe, args: args, environment: spine.env(cardId: card.id),
-                           currentDirectory: card.folder.path)
-        case .shell:
-            let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-            t.startProcess(executable: shell, args: ["-l"], environment: spine.plainEnv(),
-                           currentDirectory: card.folder.path)
-        }
+        // Under tmux this runs the *client*: it creates the session or, after an
+        // app relaunch, reattaches to one still running (the substrate's point).
+        let launch = spine.launch(role: card.role, cardId: card.id, folder: card.folder)
+        t.startProcess(executable: launch.executable, args: launch.args,
+                       environment: launch.environment, currentDirectory: card.folder.path)
         card.terminal = t
         // The glowing dark screen: terminal bg matches the bezel (the inset gap) so
         // padding is seamless, with a warm-ish light foreground.
@@ -388,7 +417,10 @@ final class CanvasViewController: NSViewController {
 
     private func deleteItem(_ item: CanvasItem) {
         releaseAsks(for: item.id)                // never strand a held hook
-        (item as? Card)?.terminal?.terminate()   // SIGTERM the agent
+        if let card = item as? Card {
+            card.terminal?.terminate()           // the tmux client (or, sans tmux, the agent)
+            spine.killSession(cardId: card.id)   // end the agent's life, not just our view of it
+        }
         (item as? DiffObject)?.stop()            // stop the git watcher
         item.containerView.removeFromSuperview()
         store.remove(item)
@@ -433,6 +465,29 @@ final class CanvasViewController: NSViewController {
         if let v = ws.viewport { savedViewport = (NSPoint(x: v.cx, y: v.cy), CGFloat(v.mag)) }
         refreshFrames()   // members exist now → fill counts + needs-you tags
         canvasLog("restored \(store.items.count) item(s), \(frames.count) frame(s)")
+        reattachLiveSessions()
+    }
+
+    /// Cards whose tmux session survived a previous app run reattach immediately —
+    /// work in flight should be observed, not parked behind "tap to start". Cards
+    /// with no live session stay dormant placeholders exactly as before, and their
+    /// status stays `idle` until real spine events say otherwise (never lies).
+    private func reattachLiveSessions() {
+        spine.liveSessionCardIds { [weak self] ids in
+            guard let self, !ids.isEmpty else { return }
+            var attached = 0
+            for case let card as Card in self.store.items where card.terminal == nil && ids.contains(card.id) {
+                self.spawnTerminal(card)
+                attached += 1
+            }
+            if attached > 0 { canvasLog("reattached \(attached) live session(s)") }
+            let orphans = ids.filter { self.store.item($0) == nil }
+            if !orphans.isEmpty {
+                // A session whose card is gone (workspace edited or lost). Surface
+                // it, never silently kill it — it may be mid-task.
+                canvasLog("orphan canvas sessions (no card): \(orphans.sorted().joined(separator: ", "))")
+            }
+        }
     }
 
     func saveWorkspace() {

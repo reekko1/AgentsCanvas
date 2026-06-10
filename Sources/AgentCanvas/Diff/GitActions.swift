@@ -8,7 +8,11 @@ enum Git {
     static func run(_ args: [String], in folder: URL) -> (code: Int32, out: Data, err: Data) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        p.arguments = ["git"] + args
+        // `--no-optional-locks`: the watcher polls `git status` in worktrees where
+        // live agents run their own git — an opportunistic index refresh must never
+        // take index.lock out from under an agent's commit. Mandatory locks
+        // (add/commit/restore) are unaffected.
+        p.arguments = ["git", "--no-optional-locks"] + args
         p.currentDirectoryURL = folder
         let out = Pipe(), err = Pipe()
         p.standardOutput = out

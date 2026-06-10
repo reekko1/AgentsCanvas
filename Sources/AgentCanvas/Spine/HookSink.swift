@@ -1,16 +1,15 @@
 import Foundation
-import Network
 
-/// The local event sink (PRD §6.2): a minimal HTTP server on an ephemeral loopback
-/// port. Each Claude Code HTTP hook POSTs its JSON payload here with the card id in
-/// the `X-Canvas-Card` header (env-interpolated per session). Compared to the old
-/// bash-sender + raw-TCP pipe this removes a process fork per lifecycle event and —
-/// the structural win — makes the channel *bidirectional*: the HTTP response body
-/// is a decision the hook delivers back to the agent.
+/// The local event sink (PRD §6.2): hook semantics over the shared `HTTPServer`.
+/// Each Claude Code HTTP hook POSTs its JSON payload to `/hook` with the card id
+/// in the `X-Canvas-Card` header (env-interpolated per session). The HTTP
+/// response body is bidirectional: a request's `respond` closure may be called
+/// later (the held PermissionRequest), keeping the connection open until the
+/// user decides. Call it exactly once; `nil` answers 200 with an empty body
+/// ("no decision").
 ///
-/// Responses can be **deferred**: a request's `respond` closure may be called later
-/// (the held PermissionRequest), keeping the connection open until the user decides.
-/// Call it exactly once; `nil` answers 200 with an empty body ("no decision").
+/// The token and port come from `SpineConfig` and survive app restarts — tmux
+/// sessions outlive the canvas, and their hooks must keep landing here.
 final class HookSink {
     struct Request {
         let cardId: String
@@ -23,88 +22,45 @@ final class HookSink {
     /// Delivered on the main thread. The handler OWNS the response: it must call
     /// `respond` exactly once (immediately for telemetry, later for held asks).
     var onRequest: ((Request) -> Void)?
-    private(set) var port: UInt16 = 0
+    var port: UInt16 { http.port }
+    /// Shared secret every request must echo in `X-Canvas-Token`. It's stamped
+    /// into the hooks config the adapter writes, so only sessions launched from
+    /// configs we created can talk to the sink — knowing the port isn't enough.
+    let token: String
 
-    private var listener: NWListener?
-    private let queue = DispatchQueue(label: "agentcanvas.sink")
+    private let http = HTTPServer(label: "sink")
 
-    /// Starts listening. `onReady` fires (main thread) once the port is bound.
-    func start(onReady: @escaping (UInt16) -> Void) throws {
-        let listener = try NWListener(using: .tcp) // ephemeral port
-        listener.newConnectionHandler = { [weak self] conn in self?.accept(conn) }
-        listener.stateUpdateHandler = { [weak self] state in
-            guard case .ready = state, let p = listener.port?.rawValue else { return }
-            self?.port = p
-            DispatchQueue.main.async { onReady(p) }
-        }
-        listener.start(queue: queue)
-        self.listener = listener
+    init(token: String) {
+        self.token = token
     }
 
-    private func accept(_ conn: NWConnection) {
-        conn.start(queue: queue)
-        var buffer = Data()
-        func pump() {
-            conn.receive(minimumIncompleteLength: 1, maximumLength: 262_144) { [weak self] data, _, isComplete, error in
-                guard let self else { conn.cancel(); return }
-                if let data, !data.isEmpty { buffer.append(data) }
-                if let parsed = Self.parseRequest(buffer) {
-                    self.dispatch(parsed, conn: conn)
-                } else if isComplete || error != nil {
-                    conn.cancel()                       // peer gone before a full request
-                } else {
-                    pump()
-                }
-            }
-        }
-        pump()
+    /// Starts listening — on the previous launch's port when possible (see
+    /// `SpineConfig`). `onReady` fires (main thread) once bound.
+    func start(preferredPort: UInt16?, onReady: @escaping (UInt16) -> Void) throws {
+        http.onRequest = { [weak self] request, respond in self?.handle(request, respond) }
+        try http.start(preferredPort: preferredPort, onReady: onReady)
     }
 
-    /// Returns (cardId, body) once the buffer holds a complete HTTP request, else nil.
-    private static func parseRequest(_ data: Data) -> (cardId: String?, body: Data)? {
-        guard let headerEnd = data.range(of: Data("\r\n\r\n".utf8)) else { return nil }
-        let head = String(decoding: data[..<headerEnd.lowerBound], as: UTF8.self)
-        var contentLength = 0
-        var cardId: String?
-        for line in head.split(separator: "\r\n") {
-            let lower = line.lowercased()
-            if lower.hasPrefix("content-length:") {
-                contentLength = Int(line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)) ?? 0
-            } else if lower.hasPrefix("x-canvas-card:") {
-                cardId = String(line.dropFirst("x-canvas-card:".count)).trimmingCharacters(in: .whitespaces)
-            }
-        }
-        let bodyStart = headerEnd.upperBound
-        guard data.distance(from: bodyStart, to: data.endIndex) >= contentLength else { return nil }
-        return (cardId, Data(data[bodyStart..<data.index(bodyStart, offsetBy: contentLength)]))
-    }
-
-    private func dispatch(_ parsed: (cardId: String?, body: Data), conn: NWConnection) {
-        let respond: (Data?) -> Void = { [queue] body in
-            Self.send(body, over: conn, on: queue)
-        }
-        guard let cardId = parsed.cardId, !cardId.isEmpty,
-              let obj = try? JSONSerialization.jsonObject(with: parsed.body) as? [String: Any],
-              let event = obj["hook_event_name"] as? String else {
-            respond(nil)                                // malformed → ack and move on
+    private func handle(_ request: HTTPServer.Request, _ respond: @escaping (HTTPServer.Response) -> Void) {
+        guard request.method == "POST", request.path == "/hook",
+              request.headers["x-canvas-token"] == token else {
+            // Wrong endpoint or missing/stale token: a bare 404 — an
+            // unauthenticated peer learns nothing, and a hook with a stale
+            // config fails fast and harmlessly (telemetry is non-blocking).
+            canvasLog("sink: dropped request (\(request.path == "/hook" ? "bad token" : "\(request.method) \(request.path)"))")
+            respond(.notFound)
             return
         }
-        let request = Request(cardId: cardId, event: event, payload: obj, respond: respond)
-        DispatchQueue.main.async { [weak self] in
-            guard let handler = self?.onRequest else { respond(nil); return }
-            handler(request)
+        let answer: (Data?) -> Void = { body in
+            respond(body.map { HTTPServer.Response.json($0) } ?? .empty)
         }
-    }
-
-    private static func send(_ body: Data?, over conn: NWConnection, on queue: DispatchQueue) {
-        queue.async {
-            let payload = body ?? Data()
-            var head = "HTTP/1.1 200 OK\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n"
-            if !payload.isEmpty { head += "Content-Type: application/json\r\n" }
-            head += "\r\n"
-            var out = Data(head.utf8)
-            out.append(payload)
-            conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })
+        guard let cardId = request.headers["x-canvas-card"], !cardId.isEmpty,
+              let obj = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+              let event = obj["hook_event_name"] as? String else {
+            answer(nil)                                 // malformed → ack and move on
+            return
         }
+        guard let onRequest else { answer(nil); return }
+        onRequest(Request(cardId: cardId, event: event, payload: obj, respond: answer))
     }
 }
