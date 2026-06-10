@@ -148,6 +148,14 @@ extension Theme {
         var monoPath:     NSFont { mono(13, .regular) }  // file paths in the diff list
         var listStat:     NSFont { mono(11, .regular) }  // +A −R counts
         var message:      NSFont { ui(14, .regular) }    // diff-pane empty states
+
+        // Poster face (a card's far-zoom LOD). Sizes are in document units and
+        // take the poster's zoom-compensation `scale` (≈1/magnification, clamped)
+        // so the type holds a constant on-screen size as the camera pulls back.
+        func posterStatus(_ s: CGFloat)   -> NSFont { mono(17 * s, .semibold) } // "✦2 · BLOCKED · 14m"
+        func posterHeadline(_ s: CGFloat) -> NSFont { ui(36 * s, .bold) }       // the task, big type
+        func posterTodo(_ s: CGFloat)     -> NSFont { ui(21 * s, .medium) }     // checklist rows (✓/▸/○ + title)
+        func posterBody(_ s: CGFloat)     -> NSFont { mono(16 * s, .regular) }  // live action / done summary
     }
 }
 

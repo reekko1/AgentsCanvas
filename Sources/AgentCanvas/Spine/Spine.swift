@@ -98,6 +98,15 @@ final class Spine {
         DispatchQueue.global(qos: .userInitiated).async { Tmux.kill(session: session) }
     }
 
+    /// The CLI's own stored plan for a session (background read, completion on
+    /// main) — re-hydrates a reattached card's checklist after an app restart.
+    func todos(sessionId: String, completion: @escaping ([AgentTodo]?) -> Void) {
+        DispatchQueue.global(qos: .utility).async { [adapter] in
+            let list = adapter.currentTodos(sessionId: sessionId)
+            DispatchQueue.main.async { completion(list) }
+        }
+    }
+
     /// Card ids whose sessions are still alive from a previous run (background
     /// query, completion on main) — the restore path reattaches these instead of
     /// leaving them dormant behind "tap to start".

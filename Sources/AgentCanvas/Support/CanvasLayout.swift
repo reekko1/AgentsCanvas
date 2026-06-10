@@ -16,6 +16,35 @@ enum CanvasLayout {
     /// Interior padding around a card's terminal (within the terminal's own
     /// background), so the CLI text has breathing room from the window edges.
     static let terminalPadding: CGFloat = 12
+    /// Below this magnification an agent card shows its poster face instead of
+    /// the live terminal (terminal glyphs are unreadable mush by here). Keyed on
+    /// magnification, not on-screen size, so a fly-in (capped at 1.0) always
+    /// lands on the terminal regardless of how small the card was resized.
+    static let posterMagnification: CGFloat = 0.55
+    /// Interior padding of the poster face (scaled with the poster's type).
+    static let posterPadding: CGFloat = 26
+    /// Ceiling on the poster's zoom compensation: past this the type stops
+    /// growing (the card itself is vanishing; chasing 1/mag forever would just
+    /// crop a single word).
+    static let posterMaxScale: CGFloat = 3.5
+    /// Quantization step for the zoom compensation (~20% increments) — a camera
+    /// fly re-layouts the poster a handful of times, not every frame.
+    static let posterScaleStep: CGFloat = 1.2
+    /// Document-unit height of the poster's irreducible core (status + two
+    /// headline lines + padding) at scale 1 — caps the scale on short cards so
+    /// the core always fits.
+    static let posterCoreHeight: CGFloat = 180
+    /// Poster simplification tiers, as zoom-compensation scale cutoffs: past
+    /// `posterDenseCutoff` line caps tighten and the checklist shrinks; past
+    /// `posterBodyCutoff` the body line goes; past `posterTodosCutoff` only
+    /// status + headline remain.
+    static let posterDenseCutoff: CGFloat = 1.5
+    static let posterBodyCutoff: CGFloat = 2.2
+    static let posterTodosCutoff: CGFloat = 3.0
+    /// Checklist row budgets per tier (below dense / below body / above) —
+    /// `.dense` is the most rows the poster ever shows, so it also sizes the
+    /// label pool.
+    static let posterRowBudgets = (dense: 7, mid: 5, tight: 4)
     /// Breathing room added around content when computing the "fit all" bounds.
     static let margin: CGFloat = 120
     /// The fixed (large) document size — big enough to feel infinite.

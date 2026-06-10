@@ -85,7 +85,7 @@ final class ClaudeCodeAdapter: AgentAdapter {
         case "SessionStart":
             ev = CardEvent(status: .idle, detail: "Session started",
                            model: Self.shortModel(payload["model"] as? String),
-                           resetSubagents: true)
+                           resetSubagents: true, todoChange: .clear)
 
         case "UserPromptSubmit":
             let label = (payload["prompt"] as? String).map { Self.clip($0, 60) }
@@ -94,7 +94,12 @@ final class ClaudeCodeAdapter: AgentAdapter {
                            taskLabel: label, resetSubagents: true)
 
         case "PreToolUse", "PostToolUse":
+            // The plan tools are the agent publishing its own checklist — capture
+            // the change itself, not just a tool name. TaskCreate/TaskUpdate only
+            // count on PostToolUse (the response carries the created id, and the
+            // mutation actually happened); everything else is a plain action line.
             ev = CardEvent(status: .running, detail: Self.toolDetail(payload))
+            if let change = Self.todoChange(payload) { ev?.todoChange = change }
 
         case "PostToolUseFailure":
             // Tool failures are routine agentic life (a failing test IS the work) —
@@ -166,15 +171,45 @@ final class ClaudeCodeAdapter: AgentAdapter {
 
         case "SessionEnd":
             ev = CardEvent(status: .idle, detail: "Session ended",
-                           clearTask: true, resetSubagents: true)
+                           clearTask: true, resetSubagents: true, todoChange: .clear)
 
         default:
             return nil
         }
-        // Permission mode rides on most tool-context payloads — capture it
-        // opportunistically wherever it appears.
+        // Permission mode and session id ride on most payloads — capture them
+        // opportunistically wherever they appear.
         ev?.permissionMode = payload["permission_mode"] as? String
+        ev?.sessionId = payload["session_id"] as? String
         return ev
+    }
+
+    /// Read the session's plan from the CLI's own task store:
+    /// `~/.claude/tasks/<session-id>/<taskId>.json`, one file per task with
+    /// `{id, subject, description, activeForm, status, …}` (empirically
+    /// verified). This is the ground truth that outlives both the app and the
+    /// hook stream — used to re-hydrate a reattached session's checklist.
+    func currentTodos(sessionId: String) -> [AgentTodo]? {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/tasks/\(sessionId)", isDirectory: true)
+        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        else { return nil }   // no store for this session (or none yet)
+        var todos: [AgentTodo] = []
+        for f in files where f.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: f),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let id = obj["id"] as? String,
+                  let subject = obj["subject"] as? String else { continue }
+            let status = obj["status"] as? String ?? "pending"
+            guard status != "deleted" else { continue }
+            todos.append(AgentTodo(id: id, content: subject, status: status,
+                                   activeForm: obj["activeForm"] as? String))
+        }
+        // An existing-but-empty dir reads as "no data", not "empty plan": the
+        // CLI creates the dir before the first task file lands, so a read in
+        // that window must not wipe todos already accumulated from deltas.
+        guard !todos.isEmpty else { return nil }
+        // Task ids are a numeric sequence — creation order is the plan's order.
+        return todos.sorted { (Int($0.id) ?? 0) < (Int($1.id) ?? 0) }
     }
 
     // MARK: Helpers
@@ -198,11 +233,55 @@ final class ClaudeCodeAdapter: AgentAdapter {
             arg = input["query"] as? String
         case "Agent", "Task":
             arg = input["description"] as? String ?? input["subagent_type"] as? String
+        case "TaskCreate":
+            arg = input["subject"] as? String
+        case "TaskUpdate":
+            let status = (input["status"] as? String).map { " → \($0)" } ?? ""
+            arg = (input["taskId"] as? String).map { "#\($0)\(status)" }
         default:
             arg = nil
         }
         guard let arg, !arg.isEmpty else { return tool }
         return "\(tool): \(clip(arg, 80))"
+    }
+
+    /// The plan change when this payload is a plan-tool call, else nil. Shapes
+    /// empirically captured from real hook payloads (claude 2.1.168):
+    /// - TaskCreate: `tool_input {subject, description, activeForm}`, and the
+    ///   PostToolUse `tool_response.task.id` carries the assigned id.
+    /// - TaskUpdate: `tool_input {taskId, status?, subject?, activeForm?}`
+    ///   (status includes "deleted"); `tool_response.statusChange.to` confirms.
+    /// - TodoWrite (older CLIs): `tool_input.todos` = full
+    ///   `[{content, status, activeForm}]` list, replacing the plan wholesale.
+    private static func todoChange(_ payload: [String: Any]) -> TodoChange? {
+        let input = payload["tool_input"] as? [String: Any] ?? [:]
+        let response = payload["tool_response"] as? [String: Any] ?? [:]
+        let isPost = payload["hook_event_name"] as? String == "PostToolUse"
+        switch payload["tool_name"] as? String {
+        case "TodoWrite":
+            guard let raw = input["todos"] as? [[String: Any]] else { return nil }
+            let todos = raw.enumerated().compactMap { i, t -> AgentTodo? in
+                guard let content = t["content"] as? String else { return nil }
+                return AgentTodo(id: "todo-\(i)", content: content,
+                                 status: t["status"] as? String ?? "pending",
+                                 activeForm: t["activeForm"] as? String)
+            }
+            return todos.isEmpty ? nil : .replace(todos)
+        case "TaskCreate" where isPost:
+            guard let subject = input["subject"] as? String,
+                  let id = (response["task"] as? [String: Any])?["id"] as? String else { return nil }
+            return .add(AgentTodo(id: id, content: subject, status: "pending",
+                                  activeForm: input["activeForm"] as? String))
+        case "TaskUpdate" where isPost:
+            guard let id = input["taskId"] as? String else { return nil }
+            let confirmed = (response["statusChange"] as? [String: Any])?["to"] as? String
+            return .update(id: id,
+                           status: confirmed ?? input["status"] as? String,
+                           content: input["subject"] as? String,
+                           activeForm: input["activeForm"] as? String)
+        default:
+            return nil
+        }
     }
 
     /// "claude-opus-4-8" → "opus 4.8" (joins numeric parts, drops date stamps).

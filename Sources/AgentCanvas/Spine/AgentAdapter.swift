@@ -1,5 +1,30 @@
 import AppKit
 
+/// One item of the agent's self-published plan — the agent narrates what it's
+/// doing and how far along it believes it is. `activeForm` is the present-tense
+/// phrasing of the in-progress item ("Wiring the sink…"), which is exactly the
+/// line a distant card should show.
+struct AgentTodo {
+    let id: String
+    var content: String
+    var status: String        // "pending" | "in_progress" | "completed"
+    var activeForm: String?
+
+    var isDone: Bool { status == "completed" }
+    var isActive: Bool { status == "in_progress" }
+}
+
+/// How a CLI event changes the agent's plan. Claude Code ≥2.1 streams the plan
+/// incrementally (TaskCreate/TaskUpdate, ids correlated via the tool response —
+/// empirically captured); older CLIs replace the whole list per call
+/// (TodoWrite). The card owns the accumulated list; adapters stay stateless.
+enum TodoChange {
+    case replace([AgentTodo])                                     // TodoWrite: full list
+    case add(AgentTodo)                                           // TaskCreate
+    case update(id: String, status: String?, content: String?, activeForm: String?) // TaskUpdate
+    case clear                                                    // session boundary
+}
+
 /// One semantic update extracted from a CLI lifecycle event — the spine's unit of
 /// delivery to the controller. Everything is optional: an event may carry only a
 /// status flip, only metadata (model, permission mode), or only a feed line.
@@ -24,6 +49,13 @@ struct CardEvent {
     /// Live subagent count adjustment (+1 on start, −1 on stop).
     var subagentDelta: Int = 0
     var resetSubagents = false
+    /// A change to the agent's plan (`nil` = no change). The task list outlives
+    /// a turn, so `.clear` happens only at session boundaries.
+    var todoChange: TodoChange? = nil
+    /// The CLI session this event belongs to — captured opportunistically (every
+    /// hook payload carries it). Persisted with the card so a reattached
+    /// session's plan can be re-hydrated from the CLI's own task store.
+    var sessionId: String? = nil
 }
 
 /// Normalizes one agent CLI into the shared event model (PRD §6.3, §7.3). All
@@ -54,4 +86,14 @@ protocol AgentAdapter: AnyObject {
     /// is expressed by responding with `allow`, `deny`, or an empty body.
     func permissionAllowBody() -> Data
     func permissionDenyBody() -> Data
+
+    /// The session's current plan as the CLI itself has it stored, or nil if
+    /// this CLI keeps no readable task store. Used to re-hydrate a reattached
+    /// session's checklist after an app restart (events only carry deltas).
+    /// Synchronous file reads — call off the main thread.
+    func currentTodos(sessionId: String) -> [AgentTodo]?
+}
+
+extension AgentAdapter {
+    func currentTodos(sessionId: String) -> [AgentTodo]? { nil }
 }

@@ -52,6 +52,7 @@ final class CanvasViewController: NSViewController {
         viewport.onChange = { [weak self] in
             guard let self else { return }
             self.syncFrameLabels()
+            self.updateCardDetail()
             self.zoomHUD?.setLevel(self.scrollView.magnification)
         }
         buildOverlays()
@@ -60,6 +61,13 @@ final class CanvasViewController: NSViewController {
             guard let self, let card = self.store.card(cardId) else { return }
             let previous = card.status
             let statusChanged = card.apply(event)
+            if let sid = event.sessionId, card.noteSession(sid) {
+                // First sighting of this session (fresh spawn, or events resuming
+                // after an app restart) → pull its whole plan from the CLI's store;
+                // from here on the hook deltas keep it current.
+                self.hydrateTodos(card, sessionId: sid)
+                self.saveWorkspace()   // the session key is persisted state
+            }
             if let s = event.status, s != .blocked {
                 // Any forward progress resolves the card's held asks: answered in
                 // the terminal, hook timed out, or the turn moved on. Releasing an
@@ -127,6 +135,7 @@ final class CanvasViewController: NSViewController {
             fitAll(animated: false)
         }
         syncFrameLabels()
+        updateCardDetail()
         zoomHUD.setLevel(scrollView.magnification)
         refreshActivity()
         updateHintVisibility()
@@ -347,6 +356,24 @@ final class CanvasViewController: NSViewController {
         if let item = store.items.first(where: { $0.id == id }) { frame(item) }
     }
 
+    /// Replace a card's plan with the CLI's stored list for `sessionId`. nil =
+    /// this CLI keeps no task store (or none for that session yet) → leave the
+    /// accumulated list alone rather than wiping it on a read miss.
+    private func hydrateTodos(_ card: Card, sessionId: String) {
+        spine.todos(sessionId: sessionId) { [weak card] list in
+            guard let card, let list, card.sessionId == sessionId else { return }
+            card.hydrateTodos(list)
+        }
+    }
+
+    /// Card LOD: below `posterMagnification` a spawned agent card swaps its
+    /// terminal for the poster face (big task + plan + live action), and back —
+    /// the poster zoom-compensates its type so it reads at any distance.
+    private func updateCardDetail() {
+        let mag = scrollView.magnification
+        for case let card as Card in store.items { card.updateLOD(magnification: mag) }
+    }
+
     // MARK: Framing
     /// The canvas extent that framing + zoom-limits must cover: on-canvas items
     /// *and* frames. A frame can extend past its member cards — or be empty — and
@@ -391,6 +418,7 @@ final class CanvasViewController: NSViewController {
         item.containerView.onResized = { [weak self, weak item] frame in
             guard let self, let item else { return }
             item.frame = frame
+            (item as? Card)?.noteFrameChanged()   // re-pin the poster's wrapping width
             self.updateZoomLimits()
             self.refreshFrames()        // resizing moves the item's center → membership can change
             self.saveWorkspace()
@@ -431,6 +459,7 @@ final class CanvasViewController: NSViewController {
         t.nativeBackgroundColor = Theme.colors.terminalBg
         t.nativeForegroundColor = Theme.colors.termText
         card.containerView.setContent(t)
+        updateCardDetail()   // spawned while zoomed out (reattach) → poster, not 5px mush
         canvasLog("spawned \(card.id) in \(card.folder.path)")
     }
 
@@ -465,6 +494,7 @@ final class CanvasViewController: NSViewController {
                 let card = Card(id: record.id, title: record.title, frame: frameRect,
                                 folder: URL(fileURLWithPath: folder),
                                 role: record.kind == "shell" ? .shell : .agent)
+                if let sid = record.session { card.noteSession(sid) }
                 store.add(card)
                 installItemView(card)
             case "diff":
@@ -498,6 +528,9 @@ final class CanvasViewController: NSViewController {
             for case let card as Card in self.store.items where card.terminal == nil && ids.contains(card.id) {
                 self.spawnTerminal(card)
                 attached += 1
+                // The session survived the restart, so its plan is still live —
+                // re-hydrate from the CLI's task store (the app's copy died with it).
+                if let sid = card.sessionId { self.hydrateTodos(card, sessionId: sid) }
             }
             if attached > 0 { canvasLog("reattached \(attached) live session(s)") }
             let orphans = ids.filter { self.store.item($0) == nil }

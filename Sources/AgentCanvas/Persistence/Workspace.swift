@@ -12,6 +12,11 @@ struct Workspace: Codable {
         var title: String
         var x: Double, y: Double, w: Double, h: Double
         var folder: String?
+        /// The card's last-known CLI session — NOT a status: it keys plan
+        /// re-hydration from the CLI's task store when the session survives
+        /// an app restart (tmux). Stale ids are harmless (the store read
+        /// just finds the old session's plan only if the session reattaches).
+        var session: String? = nil
     }
     struct Viewport: Codable { var cx: Double, cy: Double, mag: Double }
 
