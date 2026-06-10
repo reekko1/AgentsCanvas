@@ -12,6 +12,7 @@ final class DragBarView: NSView {
     /// The canvas item this bar drags (set by `ItemContainerView`). Its `superview`
     /// is the document view, the coordinate space drags are computed in.
     weak var movable: NSView?
+    var onMoving: ((NSPoint) -> Void)?
     var onMovedEnd: ((NSPoint) -> Void)?
     private var grab: NSPoint = .zero
 
@@ -31,6 +32,7 @@ final class DragBarView: NSView {
         guard let m = movable, let doc = m.superview else { return }
         let p = doc.convert(e.locationInWindow, from: nil)
         m.setFrameOrigin(NSPoint(x: p.x - grab.x, y: p.y - grab.y))
+        onMoving?(m.frame.origin)
     }
     override func mouseUp(with e: NSEvent) {
         guard let m = movable else { return }

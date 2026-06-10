@@ -7,18 +7,29 @@ import SwiftTerm
 enum CardRole { case agent, shell }
 
 /// A card on the canvas: a terminal running in a folder. Owns its view
-/// (`ItemContainerView`) and its live terminal. Agent cards mutate status as the
-/// spine delivers events; shell cards stay neutral.
+/// (`ItemContainerView`) and its live terminal. Agent cards accumulate spine
+/// state (status + when it changed, task label, model, permission mode, subagent
+/// count); shell cards stay neutral.
 final class Card: CanvasItem {
     let id: String
     var title: String
     var frame: NSRect
     let folder: URL
     let role: CardRole
-    private(set) var status: CardStatus = .idle
     var terminal: LocalProcessTerminalView?
     let containerView: ItemContainerView
     var kind: String { role == .shell ? "shell" : "card" }
+
+    private(set) var status: CardStatus = .idle
+    /// When the current status began — attention debt ("blocked 14m") and
+    /// oldest-first triage both rank on this.
+    private(set) var statusSince = Date()
+    /// Last spine event of any kind — the heartbeat for stall detection.
+    private(set) var lastEventAt = Date()
+    private(set) var taskLabel: String?
+    private(set) var model: String?
+    private(set) var permissionMode: String?
+    private(set) var subagentCount = 0
 
     init(id: String, title: String, frame: NSRect, folder: URL, role: CardRole = .agent) {
         self.id = id
@@ -37,23 +48,55 @@ final class Card: CanvasItem {
         applyVisual(status)
     }
 
-    /// Apply a new status (agent cards only) and refresh the bead + glow.
-    func apply(_ newStatus: CardStatus) {
-        guard role == .agent, newStatus != status else { return }
-        status = newStatus
-        applyVisual(newStatus)
-        canvasLog("\(title): \(newStatus)")
+    /// Apply a spine event (agent cards only). Returns true when the *status*
+    /// changed — the controller's feed-worthiness signal.
+    @discardableResult
+    func apply(_ e: CardEvent) -> Bool {
+        guard role == .agent else { return false }
+        lastEventAt = Date()
+        if let m = e.model { model = m }
+        if let pm = e.permissionMode { permissionMode = pm }
+        if e.resetSubagents { subagentCount = 0 }
+        subagentCount = max(0, subagentCount + e.subagentDelta)
+        if e.clearTask { taskLabel = nil }
+        if let t = e.taskLabel { taskLabel = t }
+
+        var changed = false
+        if let s = e.status, s != status {
+            status = s
+            statusSince = Date()
+            changed = true
+            canvasLog("\(title): \(s)")
+        }
+        applyVisual(status)
+        containerView.setSubtitle(metaText())
+        return changed
     }
 
-    /// Translate a `CardStatus` into the chrome's bead + status-word + glow. A shell
+    /// The stall watchdog's verdict: a running card gone silent. Returns true if
+    /// it actually flipped (so the controller records it once, not every tick).
+    func markStalled() -> Bool {
+        guard role == .agent, status == .running else { return false }
+        status = .stalled
+        statusSince = Date()
+        applyVisual(status)
+        canvasLog("\(title): stalled (no events)")
+        return true
+    }
+
+    /// Periodic tick from the controller's clock: keep the "· 14m" attention-debt
+    /// suffix current on cards that carry one.
+    func tick() {
+        guard role == .agent, status.isLoud || status == .stalled else { return }
+        applyVisual(status)
+    }
+
+    /// Translate the status into the chrome's bead + status-word + glow. A shell
     /// card ignores status entirely and shows a calm, neutral terminal chrome.
     private func applyVisual(_ s: CardStatus) {
         guard role == .agent else { applyShellVisual(); return }
         let c = s.color
-        containerView.setTrailing(NSAttributedString(string: s.word.uppercased(), attributes: [
-            .foregroundColor: s.isLoud ? c : Theme.colors.textMuted,
-            .font: Theme.fonts.statusWord,
-        ]))
+        containerView.setTrailing(trailingText(for: s))
         switch s {
         case .idle:
             containerView.setBead(visible: true, color: Theme.colors.statusIdle, glow: false, pulse: .none)
@@ -61,7 +104,15 @@ final class Card: CanvasItem {
         case .running:
             containerView.setBead(visible: true, color: c, glow: true, pulse: .breathe(3.4))
             containerView.setAccent(color: c, glow: .calm(breathe: 3.4))
+        case .waiting:
+            // Turn over, background work alive — calmer than running, not done-green.
+            containerView.setBead(visible: true, color: c, glow: true, pulse: .breathe(5.2))
+            containerView.setAccent(color: c, glow: .calm(breathe: 5.2))
         case .done:
+            containerView.setBead(visible: true, color: c, glow: true, pulse: .none)
+            containerView.setAccent(color: c, glow: .calm(breathe: nil))
+        case .stalled:
+            // Deserves a look, not an alarm: steady ochre, no pulse.
             containerView.setBead(visible: true, color: c, glow: true, pulse: .none)
             containerView.setAccent(color: c, glow: .calm(breathe: nil))
         case .blocked:
@@ -71,6 +122,51 @@ final class Card: CanvasItem {
             containerView.setBead(visible: true, color: c, glow: true, pulse: .alarm)
             containerView.setAccent(color: c, glow: .loud(breathe: nil), barTint: c)
         }
+    }
+
+    /// "✦2 · BLOCKED · 14m" — subagent count, status word, and (for states that
+    /// accumulate attention debt) how long it's been in that state.
+    private func trailingText(for s: CardStatus) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let font = Theme.fonts.statusWord
+        if subagentCount > 0 {
+            result.append(NSAttributedString(string: "✦\(subagentCount) · ", attributes: [
+                .foregroundColor: Theme.colors.textMuted, .font: font,
+            ]))
+        }
+        var word = s.word.uppercased()
+        if s.isLoud || s == .stalled {
+            let mins = Int(Date().timeIntervalSince(statusSince) / 60)
+            if mins >= 1 { word += " · \(mins)m" }
+        }
+        result.append(NSAttributedString(string: word, attributes: [
+            .foregroundColor: s.isLoud ? s.color : Theme.colors.textMuted,
+            .font: font,
+        ]))
+        return result
+    }
+
+    /// The subtitle line under the title: unguarded-mode warning, model, and what
+    /// the agent is working on. Nil (row hidden) until the spine has said anything.
+    private func metaText() -> NSAttributedString? {
+        let s = NSMutableAttributedString()
+        let font = Theme.fonts.listStat
+        func add(_ text: String, _ color: NSColor) {
+            if s.length > 0 {
+                s.append(NSAttributedString(string: "  ", attributes: [.font: font]))
+            }
+            s.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color]))
+        }
+        // A card in an unguarded mode can never go loud — it never asks. That
+        // absence of a possible alarm is itself supervision-critical, so flag it.
+        if permissionMode == "bypassPermissions" {
+            add("BYPASS", Theme.colors.statusError)
+        } else if permissionMode == "dontAsk" {
+            add("DON'T-ASK", Theme.colors.statusBlocked)
+        }
+        if let model { add(model, Theme.colors.textMuted) }
+        if let taskLabel { add("· \(taskLabel)", Theme.colors.textMuted) }
+        return s.length > 0 ? s : nil
     }
 
     /// Calm, neutral chrome for a plain shell: a dim bead, the shell name, no glow.

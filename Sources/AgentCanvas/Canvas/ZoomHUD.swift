@@ -10,9 +10,9 @@ final class ZoomHUD: OverlayPanel {
 
     init() {
         super.init(corner: 16)
-        let out = GlyphButton(symbol: "minus") { [weak self] in self?.onZoomOut?() }
-        let inn = GlyphButton(symbol: "plus") { [weak self] in self?.onZoomIn?() }
-        let fit = GlyphButton(symbol: "arrow.up.left.and.arrow.down.right") { [weak self] in self?.onFit?() }
+        let out = GlyphButton(symbol: "minus", tip: "Zoom out (−)") { [weak self] in self?.onZoomOut?() }
+        let inn = GlyphButton(symbol: "plus", tip: "Zoom in (+)") { [weak self] in self?.onZoomIn?() }
+        let fit = GlyphButton(symbol: "arrow.up.left.and.arrow.down.right", tip: "Fit all (⌘0)") { [weak self] in self?.onFit?() }
 
         level.font = Theme.fonts.mono(11)
         level.textColor = Theme.colors.textMuted

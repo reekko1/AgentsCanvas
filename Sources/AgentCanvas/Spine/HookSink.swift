@@ -1,14 +1,28 @@
 import Foundation
 import Network
 
-/// The local event sink (PRD §6.2). A tiny TCP listener on an ephemeral port;
-/// each Claude Code hook connects, writes `<card_id>\n<json-payload>`, and closes.
-/// We parse the card id + `hook_event_name` and hand them to `onEvent` on the
-/// main thread. PRD prefers a Unix socket; TCP on 127.0.0.1 is the accepted
-/// fallback and lets the hook be dependency-free pure-bash (/dev/tcp).
+/// The local event sink (PRD §6.2): a minimal HTTP server on an ephemeral loopback
+/// port. Each Claude Code HTTP hook POSTs its JSON payload here with the card id in
+/// the `X-Canvas-Card` header (env-interpolated per session). Compared to the old
+/// bash-sender + raw-TCP pipe this removes a process fork per lifecycle event and —
+/// the structural win — makes the channel *bidirectional*: the HTTP response body
+/// is a decision the hook delivers back to the agent.
+///
+/// Responses can be **deferred**: a request's `respond` closure may be called later
+/// (the held PermissionRequest), keeping the connection open until the user decides.
+/// Call it exactly once; `nil` answers 200 with an empty body ("no decision").
 final class HookSink {
-    /// (cardId, hookEventName, fullPayload) — delivered on the main thread.
-    var onEvent: ((String, String, [String: Any]) -> Void)?
+    struct Request {
+        let cardId: String
+        let event: String
+        let payload: [String: Any]
+        /// Answer the hook. nil/empty = 200 no-decision; JSON = a decision body.
+        let respond: (Data?) -> Void
+    }
+
+    /// Delivered on the main thread. The handler OWNS the response: it must call
+    /// `respond` exactly once (immediately for telemetry, later for held asks).
+    var onRequest: ((Request) -> Void)?
     private(set) var port: UInt16 = 0
 
     private var listener: NWListener?
@@ -31,11 +45,13 @@ final class HookSink {
         conn.start(queue: queue)
         var buffer = Data()
         func pump() {
-            conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+            conn.receive(minimumIncompleteLength: 1, maximumLength: 262_144) { [weak self] data, _, isComplete, error in
+                guard let self else { conn.cancel(); return }
                 if let data, !data.isEmpty { buffer.append(data) }
-                if isComplete || error != nil {
-                    self?.process(buffer)
-                    conn.cancel()
+                if let parsed = Self.parseRequest(buffer) {
+                    self.dispatch(parsed, conn: conn)
+                } else if isComplete || error != nil {
+                    conn.cancel()                       // peer gone before a full request
                 } else {
                     pump()
                 }
@@ -44,15 +60,51 @@ final class HookSink {
         pump()
     }
 
-    private func process(_ data: Data) {
-        guard let nl = data.firstIndex(of: 0x0A) else { return } // first '\n' splits id | payload
-        let idData = data[data.startIndex..<nl]
-        let jsonData = data[data.index(after: nl)...]
-        let cardId = String(decoding: idData, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cardId.isEmpty,
-              let obj = try? JSONSerialization.jsonObject(with: Data(jsonData)) as? [String: Any],
-              let event = obj["hook_event_name"] as? String else { return }
-        DispatchQueue.main.async { [weak self] in self?.onEvent?(cardId, event, obj) }
+    /// Returns (cardId, body) once the buffer holds a complete HTTP request, else nil.
+    private static func parseRequest(_ data: Data) -> (cardId: String?, body: Data)? {
+        guard let headerEnd = data.range(of: Data("\r\n\r\n".utf8)) else { return nil }
+        let head = String(decoding: data[..<headerEnd.lowerBound], as: UTF8.self)
+        var contentLength = 0
+        var cardId: String?
+        for line in head.split(separator: "\r\n") {
+            let lower = line.lowercased()
+            if lower.hasPrefix("content-length:") {
+                contentLength = Int(line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)) ?? 0
+            } else if lower.hasPrefix("x-canvas-card:") {
+                cardId = String(line.dropFirst("x-canvas-card:".count)).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        let bodyStart = headerEnd.upperBound
+        guard data.distance(from: bodyStart, to: data.endIndex) >= contentLength else { return nil }
+        return (cardId, Data(data[bodyStart..<data.index(bodyStart, offsetBy: contentLength)]))
+    }
+
+    private func dispatch(_ parsed: (cardId: String?, body: Data), conn: NWConnection) {
+        let respond: (Data?) -> Void = { [queue] body in
+            Self.send(body, over: conn, on: queue)
+        }
+        guard let cardId = parsed.cardId, !cardId.isEmpty,
+              let obj = try? JSONSerialization.jsonObject(with: parsed.body) as? [String: Any],
+              let event = obj["hook_event_name"] as? String else {
+            respond(nil)                                // malformed → ack and move on
+            return
+        }
+        let request = Request(cardId: cardId, event: event, payload: obj, respond: respond)
+        DispatchQueue.main.async { [weak self] in
+            guard let handler = self?.onRequest else { respond(nil); return }
+            handler(request)
+        }
+    }
+
+    private static func send(_ body: Data?, over conn: NWConnection, on queue: DispatchQueue) {
+        queue.async {
+            let payload = body ?? Data()
+            var head = "HTTP/1.1 200 OK\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n"
+            if !payload.isEmpty { head += "Content-Type: application/json\r\n" }
+            head += "\r\n"
+            var out = Data(head.utf8)
+            out.append(payload)
+            conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })
+        }
     }
 }

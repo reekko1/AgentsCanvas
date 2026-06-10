@@ -53,7 +53,9 @@ extension Theme {
         // ---- Agent status (cool+quiet calm / warm+bright loud) ----
         let statusIdle       = dyn(d: (0.5000, 0.4929, 0.5657), l: (0.5705, 0.5640, 0.6333))
         let statusRunning    = dyn(d: (0.2808, 0.7500, 0.7544), l: (0.0000, 0.6292, 0.6571))
+        let statusWaiting    = dyn(d: (0.5731, 0.6671, 0.8916), l: (0.3572, 0.4538, 0.7242)) // done-but-waiting on background work
         let statusDone       = dyn(d: (0.4609, 0.8056, 0.5974), l: (0.1943, 0.6132, 0.4100))
+        let statusStalled    = dyn(d: (0.8412, 0.6024, 0.3361), l: (0.6894, 0.4437, 0.0800)) // dusty ochre — dimmer than blocked gold
         let statusBlocked    = dyn(d: (0.9825, 0.7131, 0.2129), l: (0.8965, 0.5585, 0.0000))
         let statusError      = dyn(d: (0.9524, 0.2467, 0.2999), l: (0.8666, 0.1469, 0.2040))
 

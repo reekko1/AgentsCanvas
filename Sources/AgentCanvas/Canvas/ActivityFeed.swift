@@ -16,21 +16,23 @@ final class ActivityFeed {
     private(set) var events: [ActivityEvent] = []
     private let cap = 40
 
-    func record(id: String, name: String, status: CardStatus, date: Date) {
+    /// `detail` is the spine's payload-derived line ("Bash: npm install",
+    /// "API failure: rate_limit"); the per-status copy is the fallback.
+    func record(id: String, name: String, status: CardStatus, detail: String?, date: Date) {
         events.insert(ActivityEvent(id: id, name: name, status: status,
-                                    message: Self.message(for: status), date: date), at: 0)
+                                    message: detail ?? Self.message(for: status), date: date), at: 0)
         if events.count > cap { events.removeLast(events.count - cap) }
     }
 
-    /// Generic per-status copy (we don't yet thread the hook payload through, so
-    /// these stand in for the richer "Needs permission — `npm install`" text).
     static func message(for s: CardStatus) -> String {
         switch s {
         case .idle:    return "Went idle"
         case .running: return "Started working"
+        case .waiting: return "Waiting on background work"
         case .done:    return "Finished — waiting for you"
+        case .stalled: return "Stalled — no recent activity"
         case .blocked: return "Needs your permission"
-        case .error:   return "A tool error occurred"
+        case .error:   return "Something went wrong"
         }
     }
 }

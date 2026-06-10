@@ -21,10 +21,26 @@ final class CanvasViewController: NSViewController {
     private var notifPanel: NotificationPanel!
     private let feed = ActivityFeed()
     private var frames: [Frame] = []
+    private let frameOverlayHost = FrameOverlayHost()   // floats frame labels above the canvas
+    private let frameDrawOverlay = FrameDrawOverlay()   // captures drag-to-create a new frame
+    private var armingFrame = false                     // Frame tool armed → next drag draws a frame
+    private var lastDeletedFrame: (id: String, name: String, rect: NSRect)?   // single-level ⌘Z undo
+    /// In-progress frame drag: the frame's start origin + each child's start origin,
+    /// snapshotted at drag start so the group translates rigidly (membership can't churn
+    /// mid-drag). Nil except while a frame label is being dragged.
+    private var frameDrag: (startOrigin: NSPoint, members: [(item: CanvasItem, origin: NSPoint)])?
 
     private var savedViewport: (center: NSPoint, mag: CGFloat)?
     private var keyMonitor: Any?
     private var mouseMonitor: Any?
+
+    /// Permission dialogs held open by the spine, awaiting an orbit decision
+    /// (allow/deny from the panel) or a fly-in release (dialog → terminal).
+    private var pendingAsks: [PermissionAsk] = []
+    /// Clock for stall detection + attention-debt refresh ("blocked · 14m").
+    private var heartbeat: Timer?
+    /// A running card silent this long is presumed stuck (hung tool, dead network).
+    private static let stallAfter: TimeInterval = 300
 
     // MARK: Lifecycle
     override func loadView() {
@@ -36,37 +52,57 @@ final class CanvasViewController: NSViewController {
         viewport.onChange = { [weak self] in
             guard let self else { return }
             self.updateItemDetail()
+            self.syncFrameLabels()
             self.zoomHUD?.setLevel(self.scrollView.magnification)
         }
         buildOverlays()
 
-        spine.onStatus = { [weak self] cardId, status in
+        spine.onUpdate = { [weak self] cardId, event in
             guard let self, let card = self.store.card(cardId) else { return }
-            let changed = card.status != status
-            card.apply(status)
-            if changed {
-                self.feed.record(id: cardId, name: card.title, status: status, date: Date())
+            let statusChanged = card.apply(event)
+            if let s = event.status, s != .blocked {
+                // Any forward progress resolves the card's held asks: answered in
+                // the terminal, hook timed out, or the turn moved on. Releasing an
+                // already-answered ask is a harmless no-op.
+                self.releaseAsks(for: cardId)
+            }
+            if statusChanged || event.noteworthy {
+                self.feed.record(id: cardId, name: card.title, status: card.status,
+                                 detail: event.detail, date: Date())
                 self.refreshActivity()
                 self.refreshFrames()   // a member going loud lights the frame's "needs you" tag
             }
+            if statusChanged, card.status.isLoud { self.escalate() }
+        }
+        spine.onPermissionAsk = { [weak self] ask in
+            guard let self else { return }
+            guard self.store.card(ask.cardId) != nil else { ask.release(); return }
+            self.pendingAsks.append(ask)
+            self.refreshActivity()
+            self.escalate()
         }
         spine.start()
 
         loadWorkspace()
         installInputMonitors()
+
+        heartbeat = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.heartbeatTick()
+        }
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
         configureWindowChrome()
-        viewport.updateLimits(contentBounds: store.bounds)
+        updateZoomLimits()
         if let v = savedViewport {
             let m = max(scrollView.minMagnification, min(scrollView.maxMagnification, v.mag))
             viewport.applyZoom(center: v.center, mag: m)
         } else {
-            viewport.fitAll(contentBounds: store.bounds, animated: false)
+            fitAll(animated: false)
         }
         updateItemDetail()
+        syncFrameLabels()
         zoomHUD.setLevel(scrollView.magnification)
         refreshActivity()
         updateHintVisibility()
@@ -74,12 +110,15 @@ final class CanvasViewController: NSViewController {
 
     override func viewDidLayout() {
         super.viewDidLayout()
-        viewport.updateLimits(contentBounds: store.bounds)
+        updateZoomLimits()
+        syncFrameLabels()   // window resize shifts the doc→screen mapping
     }
 
     deinit {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
+        heartbeat?.invalidate()
+        pendingAsks.forEach { $0.release() }
     }
 
     // MARK: View tree
@@ -110,6 +149,19 @@ final class CanvasViewController: NSViewController {
             emptyView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
         ])
+
+        // Above the canvas (labels float over cards), below the window-edge overlays.
+        frameOverlayHost.frame = view.bounds
+        frameOverlayHost.autoresizingMask = [.width, .height]
+        view.addSubview(frameOverlayHost)
+
+        // The frame-draw capture layer sits just above the label host and below the
+        // tool dock, so arming it grabs canvas drags while the dock stays clickable.
+        frameDrawOverlay.frame = view.bounds
+        frameDrawOverlay.autoresizingMask = [.width, .height]
+        frameDrawOverlay.isHidden = true
+        frameDrawOverlay.onCommit = { [weak self] localRect in self?.finishFrameDraw(localRect) }
+        view.addSubview(frameDrawOverlay)
     }
 
     private func updateHintVisibility() { emptyView?.isHidden = !(store.items.isEmpty && frames.isEmpty) }
@@ -121,12 +173,12 @@ final class CanvasViewController: NSViewController {
         zoomHUD.onZoomOut = { [weak self] in self?.viewport.zoomBy(0.8) }
         zoomHUD.onFit = { [weak self] in
             guard let self else { return }
-            self.viewport.fitAll(contentBounds: self.store.bounds, animated: true)
+            self.fitAll(animated: true)
         }
         view.addSubview(zoomHUD)
 
         toolDock = ToolDock()
-        toolDock.onFrame = { [weak self] in self?.createFrame() }
+        toolDock.onFrame = { [weak self] in self?.toggleFrameTool() }
         toolDock.onAgent = { [weak self] in self?.createCard() }
         toolDock.onTerminal = { [weak self] in self?.createShell() }
         toolDock.onDiff = { [weak self] in self?.createDiff() }
@@ -134,6 +186,8 @@ final class CanvasViewController: NSViewController {
 
         notifPanel = NotificationPanel()
         notifPanel.onSelect = { [weak self] id in self?.flyToItem(id: id) }
+        notifPanel.onAllow = { [weak self] id in self?.decideAsk(id, allow: true) }
+        notifPanel.onDeny = { [weak self] id in self?.decideAsk(id, allow: false) }
         view.addSubview(notifPanel)
 
         NSLayoutConstraint.activate([
@@ -157,11 +211,72 @@ final class CanvasViewController: NSViewController {
         window.styleMask.insert(.fullSizeContentView)
     }
 
-    /// Rebuild the activity center from the feed, with the live "needs you" count.
+    /// Rebuild the activity center from the feed + held asks, the live "needs you"
+    /// count, and the dock badge (the spine's reach when the window isn't visible).
     private func refreshActivity() {
         guard notifPanel != nil else { return }
         let loud = store.items.compactMap { $0 as? Card }.filter { $0.status.isLoud }.count
-        notifPanel.reload(feed, loudCount: loud)
+        let approvals = pendingAsks.compactMap { ask -> PanelApproval? in
+            guard let card = store.card(ask.cardId) else { return nil }
+            return PanelApproval(id: ask.id, cardId: ask.cardId, name: card.title,
+                                 detail: ask.detail, created: ask.created)
+        }
+        notifPanel.reload(feed, approvals: approvals, loudCount: loud)
+        NSApp.dockTile.badgeLabel = loud > 0 ? "\(loud)" : ""
+    }
+
+    /// Pull the user back when an agent goes loud while they're elsewhere.
+    private func escalate() {
+        if !NSApp.isActive { NSApp.requestUserAttention(.criticalRequest) }
+    }
+
+    /// Stall watchdog + attention-debt refresh, every 30s: a running card with no
+    /// spine events for `stallAfter` is presumed stuck; loud cards update their
+    /// "· 14m" suffix; the panel re-renders its relative times.
+    private func heartbeatTick() {
+        var flipped = false
+        for case let card as Card in store.items where card.role == .agent {
+            if card.status == .running, Date().timeIntervalSince(card.lastEventAt) > Self.stallAfter {
+                if card.markStalled() {
+                    feed.record(id: card.id, name: card.title, status: .stalled,
+                                detail: "No spine events for \(Int(Self.stallAfter / 60))m — possibly stuck",
+                                date: Date())
+                    flipped = true
+                }
+            }
+            card.tick()
+        }
+        if flipped { refreshFrames() }
+        refreshActivity()
+    }
+
+    // MARK: Held permission asks (the orbit decision channel)
+
+    /// Decide a held ask from the activity panel.
+    private func decideAsk(_ id: UUID, allow: Bool) {
+        guard let i = pendingAsks.firstIndex(where: { $0.id == id }) else { return }
+        let ask = pendingAsks.remove(at: i)
+        allow ? ask.allow() : ask.deny()
+        canvasLog("ask \(allow ? "allowed" : "denied") from orbit: \(ask.cardId) — \(ask.detail)")
+        refreshActivity()
+    }
+
+    /// Release a card's held asks with no decision — the CLI's native dialog then
+    /// falls through to the card's terminal (the fly-in handoff).
+    private func releaseAsks(for cardId: String) {
+        let held = pendingAsks.filter { $0.cardId == cardId }
+        guard !held.isEmpty else { return }
+        pendingAsks.removeAll { $0.cardId == cardId }
+        held.forEach { $0.release() }
+        refreshActivity()
+    }
+
+    /// Tab: fly to the card that's needed you the longest (loud first, then stalled).
+    private func flyToNeediest() {
+        let agents = store.items.compactMap { $0 as? Card }.filter { $0.role == .agent }
+        let target = agents.filter { $0.status.isLoud }.min(by: { $0.statusSince < $1.statusSince })
+            ?? agents.filter { $0.status == .stalled }.min(by: { $0.statusSince < $1.statusSince })
+        if let target { frame(target) }
     }
 
     /// Fly the camera to an item by id (from an activity row).
@@ -178,20 +293,51 @@ final class CanvasViewController: NSViewController {
         }
     }
 
+    // MARK: Framing
+    /// The canvas extent that framing + zoom-limits must cover: on-canvas items
+    /// *and* frames. A frame can extend past its member cards — or be empty — and
+    /// must still land on screen, so it contributes to the bounds. When only frames
+    /// exist, the store's fallback box is unrelated geometry, so start from the
+    /// frames instead of unioning it in.
+    private var contentBounds: NSRect {
+        guard let first = frames.first else { return store.bounds }   // no frames → items only
+        var box = first.rect
+        for f in frames.dropFirst() { box = box.union(f.rect) }
+        box = box.insetBy(dx: -CanvasLayout.margin, dy: -CanvasLayout.margin)
+        guard !store.items.isEmpty else { return box }                // only frames → frames only
+        return store.bounds.union(box)                                // both
+    }
+
+    /// Fit the camera to all content. Single funnel so every caller uses the same
+    /// bounds and none silently forgets frames.
+    private func fitAll(animated: Bool) {
+        viewport.fitAll(contentBounds: contentBounds, animated: animated)
+    }
+
+    /// Re-clamp the zoom-out floor to current content (items + frames).
+    private func updateZoomLimits() {
+        viewport.updateLimits(contentBounds: contentBounds)
+    }
+
     // MARK: Items
     /// Wire an item's move/delete and place its view on the canvas.
     private func installItemView(_ item: CanvasItem) {
+        item.containerView.onMoving = { [weak self, weak item] origin in
+            guard let self, let item else { return }
+            self.highlightFrameForDrag(of: item, movedOrigin: origin)   // live "drop here" cue
+        }
         item.containerView.onMoved = { [weak self, weak item] origin in
             guard let self, let item else { return }
             item.frame.origin = origin
-            self.viewport.updateLimits(contentBounds: self.store.bounds)
+            self.clearFrameHighlights()
+            self.updateZoomLimits()
             self.refreshFrames()   // a card moving in/out of a frame changes membership
             self.saveWorkspace()
         }
         item.containerView.onResized = { [weak self, weak item] frame in
             guard let self, let item else { return }
             item.frame = frame
-            self.viewport.updateLimits(contentBounds: self.store.bounds)
+            self.updateZoomLimits()
             self.refreshFrames()        // resizing moves the item's center → membership can change
             self.updateItemDetail()     // a diff may cross the LOD threshold at its new size
             self.saveWorkspace()
@@ -203,9 +349,12 @@ final class CanvasViewController: NSViewController {
     }
 
     /// Fly to an item. A card spawns its terminal (if dormant) and takes focus on
-    /// arrival; a diff object is already live, so we just fly.
+    /// arrival; a diff object is already live, so we just fly. Flying into a card
+    /// hands its held permission asks back to the terminal: the release answers
+    /// the hook with no decision, so the native dialog appears where you've landed.
     private func frame(_ item: CanvasItem) {
         if let card = item as? Card {
+            releaseAsks(for: card.id)
             if card.terminal == nil { spawnTerminal(card) }
             viewport.frame(rect: card.frame) { [weak self, weak card] in
                 if let t = card?.terminal { self?.view.window?.makeFirstResponder(t) }
@@ -238,11 +387,12 @@ final class CanvasViewController: NSViewController {
     }
 
     private func deleteItem(_ item: CanvasItem) {
+        releaseAsks(for: item.id)                // never strand a held hook
         (item as? Card)?.terminal?.terminate()   // SIGTERM the agent
         (item as? DiffObject)?.stop()            // stop the git watcher
         item.containerView.removeFromSuperview()
         store.remove(item)
-        viewport.updateLimits(contentBounds: store.bounds)
+        updateZoomLimits()
         refreshFrames()
         updateHintVisibility()
         saveWorkspace()
@@ -304,31 +454,36 @@ final class CanvasViewController: NSViewController {
     }
 
     private func handleMouse(_ e: NSEvent) -> NSEvent? {
+        if armingFrame { return e }   // the draw overlay owns canvas clicks while armed
         guard e.window === view.window, e.clickCount == 2 else { return e }
         let p = documentView.convert(e.locationInWindow, from: nil)
         if let item = store.items.last(where: { $0.frame.contains(p) }) {
-            frame(item)
+            frame(item)                                    // a card/diff sits above frames → fly to it
+        } else if let f = frames.last(where: { $0.rect.contains(p) }) {
+            viewport.frame(rect: f.rect, completion: nil)  // empty spot inside a frame → fit that frame
         } else {
-            viewport.fitAll(contentBounds: store.bounds, animated: true)
+            fitAll(animated: true)                         // truly empty canvas → fit everything
         }
         return nil
     }
 
     private func handleKey(_ e: NSEvent) -> NSEvent? {
+        if armingFrame, e.keyCode == 53 { disarmFrameTool(); return nil }   // Esc cancels frame-draw
         let cmd = e.modifierFlags.contains(.command)
         if cmd {
             switch e.keyCode {
             case 45: createCard(); return nil       // ⌘N
-            case 29: viewport.fitAll(contentBounds: store.bounds, animated: true); return nil // ⌘0
+            case 29: fitAll(animated: true); return nil // ⌘0
             default: break
             }
         }
         if terminalIsFirstResponder() { return e }  // typing in a terminal → pass through
+        if cmd, e.keyCode == 6 { undoFrameDelete(); return nil }   // ⌘Z restores the last deleted frame
         switch e.keyCode {
-        case 53, 49: viewport.fitAll(contentBounds: store.bounds, animated: true); return nil // esc / space
+        case 53, 49: fitAll(animated: true); return nil // esc / space
+        case 48: flyToNeediest(); return nil            // tab → oldest card that needs you
         case 24, 69: viewport.zoomBy(1.25); return nil
         case 27, 78: viewport.zoomBy(0.8); return nil
-        case 45: createCard(); return nil           // n
         default: return e
         }
     }
@@ -393,7 +548,7 @@ final class CanvasViewController: NSViewController {
                         frame: centeredFrame(CanvasLayout.cardSize), folder: folder, role: role)
         store.add(card)
         installItemView(card)
-        viewport.updateLimits(contentBounds: store.bounds)
+        updateZoomLimits()
         refreshFrames()
         updateHintVisibility()
         saveWorkspace()
@@ -407,7 +562,7 @@ final class CanvasViewController: NSViewController {
         store.add(diff)
         installItemView(diff)
         diff.start()
-        viewport.updateLimits(contentBounds: store.bounds)
+        updateZoomLimits()
         updateHintVisibility()
         saveWorkspace()
         canvasLog("added \(diff.id) -> \(folder.path)")
@@ -415,73 +570,197 @@ final class CanvasViewController: NSViewController {
     }
 
     // MARK: Frames
-    private func createFrame() {
-        promptFrameName { [weak self] name in
-            guard let self, let name else { return }
-            let f = Frame(id: self.store.nextId(prefix: "frame"), name: name,
-                          rect: self.centeredFrame(CanvasLayout.frameSize))
-            self.frames.append(f)
-            self.installFrame(f)
-            self.refreshFrames()
-            self.updateHintVisibility()
-            self.saveWorkspace()
-            self.viewport.frame(rect: f.rect, completion: nil)
-        }
+    /// Clicking the Frame tool arms a one-shot "draw a frame" mode: the next drag on
+    /// the canvas rubber-bands the rectangle that becomes the frame (Figma-style),
+    /// instead of dropping a fixed box you then have to move + resize onto a cluster.
+    /// Click the tool again or press Esc to disarm.
+    private func toggleFrameTool() { armingFrame ? disarmFrameTool() : armFrameTool() }
+
+    private func armFrameTool() {
+        guard !armingFrame else { return }
+        armingFrame = true
+        frameDrawOverlay.setArmed(true)
+        toolDock.setFrameToolActive(true)
+        // Take over the cursor for the whole mode. Disabling the window's cursor-rect
+        // machinery stops the scroll view / terminal / cards from resetting it back to
+        // arrow / I-beam on every mouse-move — that reset is why a bare `set()` flickered
+        // off. With rects off, the crosshair we set sticks until we hand it back.
+        view.window?.disableCursorRects()
+        NSCursor.crosshair.set()
+        emptyView?.isHidden = true   // tuck the hint away while drawing
     }
 
-    /// Place a frame's view behind the items and wire its label (fit / move / delete).
+    private func disarmFrameTool() {
+        guard armingFrame else { return }
+        armingFrame = false
+        frameDrawOverlay.setArmed(false)
+        toolDock.setFrameToolActive(false)
+        view.window?.enableCursorRects()
+        NSCursor.arrow.set()   // hand the cursor back; views reassert their own on next move
+        updateHintVisibility()
+    }
+
+    /// Mouse-up from the draw overlay: `localRect` is the rubber-banded rectangle in
+    /// the overlay's screen space (nil = too small / a bare click → just disarm).
+    private func finishFrameDraw(_ localRect: NSRect?) {
+        defer { disarmFrameTool() }
+        guard let localRect else { return }
+        var rect = documentView.convert(localRect, from: frameDrawOverlay)
+        // Enforce a usable minimum, growing from the drawn rect's center.
+        if rect.width < CanvasLayout.minFrameSize.width || rect.height < CanvasLayout.minFrameSize.height {
+            let w = max(rect.width, CanvasLayout.minFrameSize.width)
+            let h = max(rect.height, CanvasLayout.minFrameSize.height)
+            rect = NSRect(x: rect.midX - w / 2, y: rect.midY - h / 2, width: w, height: h)
+        }
+        let f = Frame(id: store.nextId(prefix: "frame"), name: "Untitled", rect: rect)
+        frames.append(f)
+        installFrame(f)
+        refreshFrames()
+        updateHintVisibility()
+        saveWorkspace()
+        canvasLog("drew frame \(f.id) [\(Int(rect.width))×\(Int(rect.height))]")
+    }
+
+    /// Place a frame's body behind the items and its label in the floating overlay
+    /// host, wiring fit / move / resize / rename / delete.
     private func installFrame(_ f: Frame) {
-        f.view.label.onClick = { [weak self, weak f] in
+        documentView.addSubview(f.view, positioned: .below, relativeTo: nil)  // body, behind cards/diffs
+
+        f.label.documentView = documentView
+        f.label.frameView = f.view
+        f.label.onClick = { [weak self, weak f] in
             guard let self, let f else { return }
             self.viewport.frame(rect: f.rect, completion: nil)   // fit the camera to the group
         }
-        f.view.label.onMovedEnd = { [weak self, weak f] origin in
+        f.label.onMoveBegan = { [weak self, weak f] in
             guard let self, let f else { return }
-            f.rect.origin = origin
+            // Snapshot the children (everything whose center sits inside) + their origins,
+            // so the whole group moves rigidly with the frame and membership can't churn.
+            self.frameDrag = (f.rect.origin, self.itemsInside(f).map { ($0, $0.frame.origin) })
+        }
+        f.label.onMoving = { [weak self] rect in
+            guard let self, let drag = self.frameDrag else { return }
+            let dx = rect.minX - drag.startOrigin.x, dy = rect.minY - drag.startOrigin.y
+            for (item, o) in drag.members {
+                let p = NSPoint(x: o.x + dx, y: o.y + dy)
+                item.frame.origin = p                 // model
+                item.containerView.setFrameOrigin(p)  // view
+            }
+        }
+        f.label.onMovedEnd = { [weak self, weak f] rect in
+            guard let self, let f else { return }
+            f.rect = rect
+            self.frameDrag = nil
+            self.updateZoomLimits()   // frame + children moved → content bounds changed
             self.refreshFrames()
             self.saveWorkspace()
+        }
+        f.label.onRequestRename = { [weak self, weak f] in
+            guard let self, let f else { return }
+            self.promptFrameName(initial: f.name) { name in
+                guard let name else { return }
+                f.name = name              // didSet → label.setName
+                f.label.syncPosition()     // width changed
+                self.saveWorkspace()
+            }
+        }
+        f.label.onDelete = { [weak self, weak f] in
+            if let f { self?.deleteFrame(f) }
         }
         f.view.onResized = { [weak self, weak f] rect in
             guard let self, let f else { return }
             f.rect = rect
-            self.refreshFrames()        // growing/shrinking the frame changes which cards are inside
+            f.label.syncPosition()
+            self.refreshFrames()           // growing/shrinking changes which cards are inside
             self.saveWorkspace()
         }
-        f.view.label.onDelete = { [weak self, weak f] in
-            if let f { self?.deleteFrame(f) }
-        }
-        documentView.addSubview(f.view, positioned: .below, relativeTo: nil)  // always behind cards/diffs
+        frameOverlayHost.addSubview(f.label)
+        f.view.setScale(scrollView.magnification)
+        f.label.syncPosition()
     }
 
     private func deleteFrame(_ f: Frame) {
+        lastDeletedFrame = (f.id, f.name, f.rect)   // stash for ⌘Z — a frame is just name + rect
         f.view.removeFromSuperview()
+        f.label.removeFromSuperview()
         frames.removeAll { $0 === f }
         updateHintVisibility()
         saveWorkspace()
         canvasLog("deleted frame \(f.id)")
     }
 
+    /// Restore the most recently deleted frame (single level). Frames carry no live
+    /// state, so re-creating one with its old id/name/rect is a faithful undo — unlike
+    /// a card, whose agent process can't be resurrected. Delete is the one irreversible
+    /// frame action, so this covers the real risk without app-wide undo machinery.
+    private func undoFrameDelete() {
+        guard let d = lastDeletedFrame else { return }
+        lastDeletedFrame = nil
+        let f = Frame(id: d.id, name: d.name, rect: d.rect)
+        frames.append(f)
+        installFrame(f)
+        refreshFrames()
+        updateHintVisibility()
+        saveWorkspace()
+        canvasLog("restored frame \(f.id)")
+    }
+
+    /// Keep every frame's dashed body crisp (zoom-compensated) and its floating
+    /// label glued to the frame's on-screen top-left, as the camera moves.
+    private func syncFrameLabels() {
+        guard !frames.isEmpty else { return }
+        let mag = scrollView.magnification
+        for f in frames { f.view.setScale(mag); f.label.syncPosition() }
+    }
+
     /// Recompute each frame's member count + "needs you" tag from geometry + status.
     private func refreshFrames() {
         guard !frames.isEmpty else { return }
-        let cards = store.items.compactMap { $0 as? Card }
         for f in frames {
-            let members = f.members(in: cards)
-            let loud = members.first { $0.status == .blocked }?.status.color
-                    ?? members.first { $0.status == .error }?.status.color
-            f.view.update(count: members.count, loud: loud)
+            // A frame is a general spatial group: the badge counts *everything* inside
+            // (cards of either role + diffs), so the number matches what you see and what
+            // a frame-drag carries. The "needs you" flag stays agent-only — only an agent
+            // has a status that can go loud (shells and diffs have no spine).
+            let inside = itemsInside(f)
+            let agents = inside.compactMap { $0 as? Card }.filter { $0.role == .agent }
+            let loud = agents.first { $0.status == .blocked }?.status.color
+                    ?? agents.first { $0.status == .error }?.status.color
+            f.update(count: inside.count, loud: loud)
         }
     }
 
-    private func promptFrameName(_ completion: @escaping (String?) -> Void) {
+    /// While a card is dragged, light the frame it would join (its center's frame) so
+    /// membership is verifiable by eye. Only *agent* cards drive it — a shell or diff
+    /// never changes a frame's tally, so it shows no join cue.
+    private func highlightFrameForDrag(of item: CanvasItem, movedOrigin: NSPoint) {
+        let center = NSPoint(x: movedOrigin.x + item.frame.width / 2,
+                             y: movedOrigin.y + item.frame.height / 2)
+        let isAgent = (item as? Card)?.role == .agent
+        let target = isAgent ? frames.last(where: { $0.rect.contains(center) }) : nil
+        for f in frames { f.view.isHighlighted = (f === target) }
+    }
+
+    private func clearFrameHighlights() {
+        for f in frames where f.view.isHighlighted { f.view.isHighlighted = false }
+    }
+
+    /// The frame's spatial children: items whose center sits inside its rect (cards of
+    /// either role + diffs). Broader than the badge's agent-only tally — dragging the
+    /// frame should carry everything that visually sits in the box.
+    private func itemsInside(_ f: Frame) -> [CanvasItem] {
+        store.items.filter { f.rect.contains(NSPoint(x: $0.frame.midX, y: $0.frame.midY)) }
+    }
+
+    private func promptFrameName(initial: String = "", _ completion: @escaping (String?) -> Void) {
         guard let window = view.window else { completion(nil); return }
         let alert = NSAlert()
-        alert.messageText = "New frame"
+        alert.messageText = initial.isEmpty ? "New frame" : "Rename frame"
         alert.informativeText = "Name this group of agents."
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
         field.placeholderString = "e.g. checkout"
+        field.stringValue = initial
         alert.accessoryView = field
-        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: initial.isEmpty ? "Create" : "Rename")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
         alert.beginSheetModal(for: window) { resp in

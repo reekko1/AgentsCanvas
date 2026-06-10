@@ -39,6 +39,7 @@ final class ItemContainerView: NSView {
     private let titleBar = DragBarView()
     private let bead = BeadView()
     private let titleLabel = NSTextField(labelWithString: "")
+    private let subtitleLabel = NSTextField(labelWithString: "")
     private let trailingLabel = NSTextField(labelWithString: "")
     private let deleteButton = NSButton()
     private let placeholder = NSTextField(labelWithString: "")
@@ -50,6 +51,9 @@ final class ItemContainerView: NSView {
     var showsScreenTexture = false
     private var screenTexture: ScreenTextureView?
 
+    /// Fired continuously while the title bar drags the item (each mouse-move), for
+    /// live feedback (e.g. frame join highlighting). `onMoved` still fires once on drop.
+    var onMoving: ((NSPoint) -> Void)?
     var onMoved: ((NSPoint) -> Void)?
     var onDelete: (() -> Void)?
     /// Fired when a resize gesture commits (mouse-up), carrying the new outer frame.
@@ -79,6 +83,7 @@ final class ItemContainerView: NSView {
         titleBar.wantsLayer = true
         titleBar.movable = self
         titleBar.translatesAutoresizingMaskIntoConstraints = false
+        titleBar.onMoving = { [weak self] origin in self?.onMoving?(origin) }
         titleBar.onMovedEnd = { [weak self] origin in self?.onMoved?(origin) }
         clip.addSubview(titleBar)
 
@@ -89,6 +94,12 @@ final class ItemContainerView: NSView {
         titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         configureTitle(dir: nil, name: title)
+
+        subtitleLabel.lineBreakMode = .byTruncatingTail
+        subtitleLabel.isEditable = false; subtitleLabel.isBordered = false; subtitleLabel.drawsBackground = false
+        subtitleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        subtitleLabel.isHidden = true
 
         trailingLabel.font = Theme.fonts.statusWord
         trailingLabel.textColor = Theme.colors.textMuted
@@ -103,10 +114,19 @@ final class ItemContainerView: NSView {
         deleteButton.action = #selector(deleteTapped)
         deleteButton.setContentHuggingPriority(.required, for: .horizontal)
 
-        let barStack = NSStackView(views: [bead, titleLabel, trailingLabel, deleteButton])
+        // Title column: name row + (optional) meta subtitle. NSStackView show/hide
+        // is the sanctioned way to toggle the row inside the magnified canvas.
+        let titleColumn = NSStackView(views: [titleLabel, subtitleLabel])
+        titleColumn.orientation = .vertical
+        titleColumn.alignment = .leading
+        titleColumn.spacing = 0
+        titleColumn.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        titleColumn.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let barStack = NSStackView(views: [bead, titleColumn, trailingLabel, deleteButton])
         barStack.orientation = .horizontal
         barStack.alignment = .centerY
-        barStack.distribution = .fill           // titleLabel (low hugging) takes the slack
+        barStack.distribution = .fill           // titleColumn (low hugging) takes the slack
         barStack.spacing = 9
         barStack.translatesAutoresizingMaskIntoConstraints = false
         titleBar.addSubview(barStack)
@@ -242,6 +262,16 @@ final class ItemContainerView: NSView {
 
     /// Plain title (kept for callers that just set a string).
     func setTitle(_ text: String) { configureTitle(dir: nil, name: text) }
+
+    /// The meta line under the title (mode warning · model · task). Nil hides the row.
+    func setSubtitle(_ attributed: NSAttributedString?) {
+        if let attributed {
+            subtitleLabel.attributedStringValue = attributed
+            subtitleLabel.isHidden = false
+        } else {
+            subtitleLabel.isHidden = true
+        }
+    }
 
     /// The bead at the leading edge (cards). Hidden for diffs.
     func setBead(visible: Bool, color: NSColor = Theme.colors.statusIdle,
