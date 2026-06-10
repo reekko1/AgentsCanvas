@@ -50,6 +50,10 @@ final class RemoteServer {
     private let http = HTTPServer(label: "remote")
     private var stateJSON = Data("{}".utf8)
 
+    /// The bound loopback port (0 until `start`'s listener is up) — what the
+    /// wizard's `tailscale serve` command and serve-status probe point at.
+    var port: UInt16 { http.port }
+
     func start(preferredPort: UInt16?, onReady: @escaping (UInt16) -> Void) throws {
         http.onRequest = { [weak self] request, respond in self?.handle(request, respond) }
         try http.start(preferredPort: preferredPort, onReady: onReady)

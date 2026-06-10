@@ -34,6 +34,12 @@ final class CanvasViewController: NSViewController {
     private var keyMonitor: Any?
     private var mouseMonitor: Any?
 
+    /// The first-run wizard, when up (also hosts the remote-access re-entry).
+    private var onboarding: OnboardingOverlayView?
+    /// Run once, ever: any dismissal or completion sets this; the empty state's
+    /// readiness rows are the maintenance surface from then on.
+    private static let onboardingDoneKey = "onboardingCompleted"
+
     /// Permission dialogs held open by the spine, awaiting an orbit decision
     /// (allow/deny from the panel) or a fly-in release (dialog → terminal).
     private var pendingAsks: [PermissionAsk] = []
@@ -114,13 +120,93 @@ final class CanvasViewController: NSViewController {
         }
     }
 
-    /// First-run environment check, surfaced through the empty state. Only
-    /// meaningful while the canvas is empty — once cards exist, the terminal
-    /// itself reports reality.
+    /// Environment check, surfaced through the wizard while it's up, otherwise
+    /// through the empty state. Only meaningful while the canvas is empty —
+    /// once cards exist, the terminal itself reports reality.
     private func refreshReadiness() {
+        if let onboarding {
+            Readiness.check(remotePort: spine.remote.port) { [weak onboarding] report in
+                onboarding?.dialog.apply(report)
+            }
+            return
+        }
         guard store.items.isEmpty, frames.isEmpty else { return }
-        Readiness.check { [weak self] report in
+        Readiness.check(remotePort: spine.remote.port) { [weak self] report in
             self?.emptyView?.apply(report)
+        }
+    }
+
+    // MARK: First-run wizard
+
+    /// Present the setup wizard on a fresh machine: never seen before, nothing
+    /// on the canvas. Probes first so the welcome screen can adapt (a fully
+    /// equipped Mac gets the one-screen "everything's ready" path).
+    private func maybePresentOnboarding() {
+        guard onboarding == nil,
+              !UserDefaults.standard.bool(forKey: Self.onboardingDoneKey),
+              store.items.isEmpty, frames.isEmpty else { return }
+        Readiness.check(remotePort: spine.remote.port) { [weak self] report in
+            guard let self, self.onboarding == nil,
+                  self.store.items.isEmpty, self.frames.isEmpty else { return }
+            self.presentOnboarding(mode: .firstRun, report: report)
+        }
+    }
+
+    private func presentOnboarding(mode: OnboardingDialogView.Mode, report: Readiness.Report) {
+        let dialog = OnboardingDialogView(mode: mode, report: report,
+                                          remotePort: { [spine] in spine.remote.port })
+        dialog.onDismiss = { [weak self] in self?.completeOnboarding(launchCard: false) }
+        dialog.onChooseFolder = { [weak self] in self?.completeOnboarding(launchCard: true) }
+        // The wizard polls while an install is in flight — the user working in
+        // Terminal beside the canvas never re-activates the app, so activation
+        // probes alone would leave "watching for it…" blind.
+        dialog.onRequestProbe = { [weak self] in self?.refreshReadiness() }
+        let overlay = OnboardingOverlayView(dialog: dialog)
+        view.addSubview(overlay)   // last → above every window-edge overlay
+        NSLayoutConstraint.activate([
+            overlay.topAnchor.constraint(equalTo: view.topAnchor),
+            overlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
+        onboarding = overlay
+        updateHintVisibility()
+        overlay.present()
+        canvasLog("onboarding presented (\(mode == .firstRun ? "first run" : "remote access"))")
+    }
+
+    /// One exit funnel: mark seen, fade out, land on the canvas — `launchCard`
+    /// chains straight into the folder picker (the wizard's exit IS ⌘N).
+    private func completeOnboarding(launchCard: Bool) {
+        guard let overlay = onboarding else { return }
+        onboarding = nil
+        UserDefaults.standard.set(true, forKey: Self.onboardingDoneKey)
+        overlay.dismissAnimated { [weak self] in
+            guard let self else { return }
+            self.updateHintVisibility()
+            self.refreshReadiness()   // whatever's still missing falls back to the readiness rows
+            if launchCard { self.createCard() }
+        }
+    }
+
+    /// "Run Setup…" (app menu): re-visit the whole wizard anytime — skipped a
+    /// step at first run, want it enabled now. Satisfied steps skip themselves,
+    /// so it only walks what's actually missing.
+    @objc func runSetup(_ sender: Any?) {
+        reopenOnboarding(mode: .firstRun)
+    }
+
+    /// "Set Up Remote Access…" (app menu): reopen just the tailscale chapter —
+    /// its QR reward stays reachable forever after first run.
+    @objc func setUpRemoteAccess(_ sender: Any?) {
+        reopenOnboarding(mode: .remoteOnly)
+    }
+
+    private func reopenOnboarding(mode: OnboardingDialogView.Mode) {
+        guard onboarding == nil else { return }
+        Readiness.check(remotePort: spine.remote.port) { [weak self] report in
+            guard let self, self.onboarding == nil else { return }
+            self.presentOnboarding(mode: mode, report: report)
         }
     }
 
@@ -140,6 +226,7 @@ final class CanvasViewController: NSViewController {
         refreshActivity()
         updateHintVisibility()
         refreshReadiness()
+        maybePresentOnboarding()
     }
 
     override func viewDidLayout() {
@@ -198,7 +285,11 @@ final class CanvasViewController: NSViewController {
         view.addSubview(frameDrawOverlay)
     }
 
-    private func updateHintVisibility() { emptyView?.isHidden = !(store.items.isEmpty && frames.isEmpty) }
+    private func updateHintVisibility() {
+        // The wizard owns the empty canvas while it's up (the hint would bleed
+        // through the scrim); it returns on dismissal.
+        emptyView?.isHidden = !(store.items.isEmpty && frames.isEmpty) || onboarding != nil
+    }
 
     /// Create the constant-size window-edge overlays and wire them to the engine.
     private func buildOverlays() {
@@ -575,6 +666,17 @@ final class CanvasViewController: NSViewController {
     }
 
     private func handleKey(_ e: NSEvent) -> NSEvent? {
+        if onboarding != nil {
+            // The wizard is modal to the canvas: Esc dismisses, ⌘N is the exit
+            // step's "Choose a folder" from anywhere, Return fires the step's
+            // primary (the default-button convention).
+            if e.keyCode == 53 { completeOnboarding(launchCard: false); return nil }
+            if e.modifierFlags.contains(.command), e.keyCode == 45 {
+                completeOnboarding(launchCard: true); return nil
+            }
+            if e.keyCode == 36, onboarding?.dialog.performPrimary() == true { return nil }
+            return e
+        }
         if armingFrame, e.keyCode == 53 { disarmFrameTool(); return nil }   // Esc cancels frame-draw
         let cmd = e.modifierFlags.contains(.command)
         if cmd {

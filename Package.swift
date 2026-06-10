@@ -14,6 +14,7 @@ let package = Package(
             dependencies: ["SwiftTerm", "Sparkle"],
             resources: [
                 .copy("Resources/Fonts"),
+                .copy("Resources/AppIcon.png"),
                 .copy("Resources/backdrop-dark.mp4"),
                 .copy("Resources/backdrop-light.mp4")
             ]

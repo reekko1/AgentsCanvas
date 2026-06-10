@@ -41,6 +41,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appMenu.addItem(Updater.menuItem())
         appMenu.addItem(NSMenuItem.separator())
+        // The wizard stays revisitable: skipped a step at first run, enable it
+        // later (satisfied steps skip themselves). The remote-access item jumps
+        // straight to the tailscale chapter — its QR is worth re-opening alone.
+        appMenu.addItem(withTitle: "Run Setup…",
+                        action: #selector(CanvasViewController.runSetup(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Set Up Remote Access…",
+                        action: #selector(CanvasViewController.setUpRemoteAccess(_:)), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Hide Agent Canvas", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Quit Agent Canvas", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")

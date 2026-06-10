@@ -1,32 +1,16 @@
 import AppKit
 
-/// The empty first-run card: a warm brand mark, a calm headline, and the keys to
+/// The empty first-run card: the app's mark, a calm headline, and the keys to
 /// get started. Centered over the empty canvas; hidden once any item exists.
 final class EmptyStateView: NSView {
-    private let mark = NSView()
-    private let markGradient = CAGradientLayer()
+    private let mark = BrandMarkView(size: 60)   // the real app icon, same as the wizard
 
     init() {
         super.init(frame: .zero)
         wantsLayer = true
 
-        // Brand mark: a rounded warm gradient tile with a + glyph.
-        mark.wantsLayer = true
-        mark.layer?.cornerRadius = 18
-        mark.layer?.masksToBounds = true
-        markGradient.startPoint = CGPoint(x: 0.25, y: 0)
-        markGradient.endPoint = CGPoint(x: 1, y: 1)
-        mark.layer?.addSublayer(markGradient)
-        mark.translatesAutoresizingMaskIntoConstraints = false
-        let plus = NSImageView()
-        plus.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 24, weight: .semibold))
-        plus.contentTintColor = .white
-        plus.translatesAutoresizingMaskIntoConstraints = false
-        mark.addSubview(plus)
-
         let headline = NSTextField(labelWithString: "A quiet place for your agents")
-        headline.font = Theme.fonts.ui(22, .bold)
+        headline.font = Theme.fonts.ui(22, .semibold)
         headline.textColor = Theme.colors.textPrimary
         headline.alignment = .center
 
@@ -63,17 +47,12 @@ final class EmptyStateView: NSView {
         addSubview(stack)
 
         NSLayoutConstraint.activate([
-            mark.widthAnchor.constraint(equalToConstant: 60),
-            mark.heightAnchor.constraint(equalToConstant: 60),
-            plus.centerXAnchor.constraint(equalTo: mark.centerXAnchor),
-            plus.centerYAnchor.constraint(equalTo: mark.centerYAnchor),
             body.widthAnchor.constraint(lessThanOrEqualToConstant: 380),
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
-        applyMarkColors()
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -95,12 +74,16 @@ final class EmptyStateView: NSView {
         readinessStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         var rows: [NSView] = []
         if !report.claudeFound {
+            // Same canonical install path as the wizard (the official curl
+            // installer) — two surfaces must never offer two different routes
+            // to the same tool. The compact row shows a short label; the chip
+            // copies the full command.
             rows.append(readinessRow(
                 bead: Theme.colors.statusBlocked,
-                title: "Claude Code is not installed",
-                detail: "Agent Canvas supervises Claude Code agents.\nInstall it, then press ⌘N.",
-                action: LinkChip(title: "Get Claude Code",
-                                 url: URL(string: "https://claude.com/claude-code")!)))
+                title: "Nothing to supervise yet",
+                detail: "Agent Canvas supervises Claude Code agents.\nRun the installer in Terminal, then press ⌘N.",
+                action: CopyChip(command: "curl -fsSL https://claude.ai/install.sh | bash",
+                                 label: "Copy install command")))
         }
         if !report.tmuxFound {
             rows.append(readinessRow(
@@ -215,11 +198,6 @@ final class EmptyStateView: NSView {
         return row
     }
 
-    override func layout() {
-        super.layout()
-        markGradient.frame = mark.bounds
-    }
-
     /// A keycap chip (mono on a bordered tile).
     private func kbd(_ text: String) -> NSView {
         let l = NSTextField(labelWithString: " \(text) ")
@@ -242,16 +220,8 @@ final class EmptyStateView: NSView {
     }
     private func dot() -> NSTextField { let d = label("·"); d.alphaValue = 0.5; return d }
 
-    private func applyMarkColors() {
-        markGradient.colors = [
-            Theme.colors.statusBlocked.cgColor,   // amber
-            Theme.colors.statusError.cgColor,     // red
-            Theme.colors.primary.cgColor,         // indigo
-        ]
-    }
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        effectiveAppearance.performAsCurrentDrawingAppearance { applyMarkColors() }
         // Layer colors froze at assignment; rebuild the readiness rows in the new
         // appearance (apply() is gated on report change, so clear the cache).
         if let report = lastReport {
@@ -261,121 +231,5 @@ final class EmptyStateView: NSView {
     }
 }
 
-// MARK: - Readiness chips
-
-/// Hoverable bordered chip base: label + optional SF symbol, hand cursor,
-/// hover lifts border + text toward the accent.
-private class Chip: NSView {
-    let label = NSTextField(labelWithString: "")
-    let icon = NSImageView()
-    var hoverTint: NSColor { Theme.colors.primary }
-    private var tracking: NSTrackingArea?
-    private var hovering = false { didSet { refresh() } }
-
-    init(text: String, symbol: String?, mono: Bool) {
-        super.init(frame: .zero)
-        wantsLayer = true
-        layer?.cornerRadius = 6
-        layer?.borderWidth = 1
-        translatesAutoresizingMaskIntoConstraints = false
-
-        label.stringValue = text
-        label.font = mono ? Theme.fonts.mono(11.5) : Theme.fonts.ui(12, .semibold)
-        label.isEditable = false; label.isBordered = false; label.drawsBackground = false
-
-        var views: [NSView] = [label]
-        if let symbol {
-            icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: 10, weight: .medium))
-            views.append(icon)
-        }
-        let row = NSStackView(views: views)
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 5
-        row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -9),
-            row.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
-        ])
-        refresh()
-    }
-    required init?(coder: NSCoder) { fatalError() }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
-        let t = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
-                               owner: self)
-        addTrackingArea(t); tracking = t
-    }
-    override func mouseEntered(with event: NSEvent) { hovering = true }
-    override func mouseExited(with event: NSEvent) { hovering = false }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
-
-    func refresh() {
-        let tint = hovering ? hoverTint : Theme.colors.glyph
-        label.textColor = tint
-        icon.contentTintColor = tint
-        layer?.borderColor = (hovering ? hoverTint : Theme.colors.border).cgColor
-        layer?.backgroundColor = (hovering ? Theme.colors.hover : NSColor.clear).cgColor
-    }
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        effectiveAppearance.performAsCurrentDrawingAppearance { refresh() }
-    }
-}
-
-/// Opens a URL — "Get Claude Code".
-private final class LinkChip: Chip {
-    private let url: URL
-    init(title: String, url: URL) {
-        self.url = url
-        super.init(text: title, symbol: "arrow.up.right", mono: false)
-        setAccessibilityRole(.button)
-        setAccessibilityLabel(title)
-    }
-    required init?(coder: NSCoder) { fatalError() }
-    override func mouseUp(with event: NSEvent) {
-        if bounds.contains(convert(event.locationInWindow, from: nil)) {
-            NSWorkspace.shared.open(url)
-        }
-    }
-}
-
-/// A copyable command — click puts it on the pasteboard and confirms inline.
-private final class CopyChip: Chip {
-    private let command: String
-    private var revertTimer: Timer?
-    override var hoverTint: NSColor { Theme.colors.statusDone }
-
-    init(command: String) {
-        self.command = command
-        super.init(text: command, symbol: "doc.on.doc", mono: true)
-        toolTip = "Copy to clipboard"
-        setAccessibilityRole(.button)
-        setAccessibilityLabel("Copy \(command)")
-    }
-    required init?(coder: NSCoder) { fatalError() }
-    deinit { revertTimer?.invalidate() }
-
-    override func mouseUp(with event: NSEvent) {
-        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(command, forType: .string)
-        label.stringValue = "copied"
-        icon.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
-        revertTimer?.invalidate()
-        revertTimer = Timer.scheduledTimer(withTimeInterval: 1.4, repeats: false) { [weak self] _ in
-            guard let self else { return }
-            self.label.stringValue = self.command
-            self.icon.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: 10, weight: .medium))
-            self.refresh()
-        }
-    }
-}
+// Readiness chips (Chip / LinkChip / CopyChip) live in `Chips.swift` — shared
+// with the onboarding dialog.

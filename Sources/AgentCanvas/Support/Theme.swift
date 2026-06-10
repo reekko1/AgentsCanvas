@@ -80,10 +80,23 @@ extension Theme {
         let primaryInk       = dyn(d: (0.0481, 0.0472, 0.0845), l: (0.9851, 0.9855, 1.0000)) // text on primary
         let primaryDisabled  = dyn(d: (0.2732, 0.2731, 0.3434), l: (0.7870, 0.7882, 0.8449))
         let pillBg           = dyn(d: (0.1921, 0.1915, 0.2579), l: (0.8761, 0.8774, 0.9353))
+        /// Primary button hover — `primary` lifted slightly toward white.
+        /// Resolves at access time; re-apply on appearance change like any token.
+        var primaryHover: NSColor { primary.blended(withFraction: 0.08, of: .white) ?? primary }
+        /// Keycap tile riding on a primary button (faint wash over `primary`).
+        let primaryKeycap    = NSColor(calibratedWhite: 1, alpha: 0.16)
 
         // ---- Terminal sample content (real PTY uses the configured ANSI palette) ----
         let termText         = dyn(d: (0.7635, 0.8361, 0.8393), l: (0.7635, 0.8361, 0.8393))
         let termMuted        = dyn(d: (0.4457, 0.4843, 0.5256), l: (0.4457, 0.4843, 0.5256))
+
+        // ---- Onboarding dialog ----
+        /// The wash dimming the canvas behind the setup dialog.
+        let dialogScrim     = dynA(d: (0.045, 0.040, 0.075, 0.52), l: (0.25, 0.23, 0.28, 0.40))
+        /// QR backing — stays paper in both modes (cameras need a light field).
+        let qrPaper         = NSColor(srgbRed: 0.972, green: 0.962, blue: 0.937, alpha: 1)
+        /// QR modules on the paper.
+        let qrInk           = NSColor(srgbRed: 0.082, green: 0.082, blue: 0.102, alpha: 1)
 
         // Icon-button hover highlight — a subtle alpha wash (kept distinct from `hover`).
         let controlHover = NSColor(name: nil) { a in
